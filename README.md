@@ -10,7 +10,7 @@ Follow these steps to set up the project on your local machine:
 
 **1. Clone the repository to your local machine:**
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_LINK>
+git clone <https://github.com/zakaria-stack/forensic_dashboard>
 
 2. Navigate to the project directory:
 Bash
@@ -60,4 +60,5 @@ Bash
 
 git push origin main
 
-    ⚠️ Important Note: Please only edit your designated file (e.g., windows_usb_zakaria.py, linux_pcap.py, or mobile_nlp.py). Do not modify main.py unless agreed upon, to prevent conflicts!
+    ⚠️ Important Note: Please only edit your designated file (e.g., windows_usb_zakaria.py,
+linux_pcap.py, or mobile_nlp.py). Do not modify main.py unless agreed upon, to prevent conflicts!
