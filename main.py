@@ -1,12 +1,14 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
 
-# Kan-importiw l-fichiers dyal l-equipe
+# Kan-importiw l-fichiers dyal l-equipe kamlin (kima f ls)
 import windows_usb_zakaria
-import linux_pcap
+import pcap
+import linux
 import mobile_nlp
+import rapport_final
 
-# 1. Configuration dyal la page
+# 1. Configuration dyal la page (DIMA hiya lowla f Streamlit)
 st.set_page_config(page_title="SOC | TechCorp Forensics", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
 # 2. CUSTOM CSS (Design Light Mode Officiel)
@@ -103,7 +105,6 @@ st.markdown("""
 
 # 3. L-MENU F JJENB (SIDEBAR) - DESIGN PRO
 with st.sidebar:
-    # Hna tqder tzid l-logo dyal l-EST dyalkom ila knti 7atto f dossier assets
     # st.image("assets/est_logo.png", width=80) 
     
     st.markdown("### 🔍 **AUDIT FORENSIQUE**")
@@ -120,16 +121,17 @@ with st.sidebar:
     
     st.success("✅ **Environnement Sécurisé**")
     st.divider()
+    
     # ======== L-MENU ========
     page = option_menu(
         menu_title="TERMINAL",
-        options=["Dashboard", "Windows & USB", "Serveur Linux & PCAP", "Mobile & NLP (IA)"],
-        icons=["cpu", "windows", "terminal", "phone"], 
+        options=["Dashboard", "Windows & USB", "Serveur Linux & PCAP", "Mobile & NLP (IA)", "Rapport Final"], 
+        icons=["cpu", "windows", "terminal", "phone", "journal-check"],
         menu_icon="shield-lock",
         default_index=0,
         styles={
             "container": {"padding": "0!important", "background-color": "transparent"},
-            "icon": {"color": "#1E3A8A", "font-size": "18px"}, # Iconat b Zreq
+            "icon": {"color": "#1E3A8A", "font-size": "18px"}, 
             "nav-link": {"font-size": "14px", "text-align": "left", "margin":"5px", "color": "#0F172A", "font-family": "monospace"},
             "nav-link-selected": {"background-color": "#1E3A8A", "color": "white", "font-weight": "bold"},
         }
@@ -186,7 +188,7 @@ if page == "Dashboard":
         st.markdown("""
         <div class="info-card">
             <h4>🐧 Pôle Réseau & Linux</h4>
-            <p><b>Opérateur :</b> [Nom 2]</p>
+            <p><b>Opérateur :</b> Ismail</p>
             <ul>
                 <li>Analyse des trames réseau (PCAP)</li>
                 <li>Audit des logs du serveur cible</li>
@@ -200,7 +202,7 @@ if page == "Dashboard":
         st.markdown("""
         <div class="info-card">
             <h4>📱 Pôle Mobile & IA (NLP)</h4>
-            <p><b>Opérateur :</b> [Nom 3]</p>
+            <p><b>Opérateur :</b> Ahmed</p>
             <ul>
                 <li>Extraction physique du smartphone</li>
                 <li>Modèle IA (NLP) sur les SMS</li>
@@ -214,7 +216,27 @@ elif page == "Windows & USB":
     windows_usb_zakaria.run()
 
 elif page == "Serveur Linux & PCAP":
-    linux_pcap.run()
+    # Hna jm3na l-khedma dyal Ismail b-jouj (Linux + PCAP)
+    # Kan-fترضou bli l-fichiers linux.py w pcap.py fihom fonction smitha run()
+    tab_linux, tab_pcap = st.tabs(["🐧 Analyse Serveur Linux", "📡 Analyse Trafic Réseau (PCAP)"])
+    
+    with tab_linux:
+        try:
+            linux.run()
+        except AttributeError:
+            st.info("⚠️ Le fichier `linux.py` est en cours de développement par Ismail (La fonction run() n'est pas encore définie).")
+            
+    with tab_pcap:
+        try:
+            pcap.run()
+        except AttributeError:
+            st.info("⚠️ Le fichier `pcap.py` est en cours de développement par Ismail (La fonction run() n'est pas encore définie).")
 
 elif page == "Mobile & NLP (IA)":
-    mobile_nlp.run()
+    try:
+        mobile_nlp.run()
+    except AttributeError:
+        st.info("⚠️ Le fichier `mobile_nlp.py` est en cours de développement par Ahmed.")
+
+elif page == "Rapport Final":
+    rapport_final.run()
