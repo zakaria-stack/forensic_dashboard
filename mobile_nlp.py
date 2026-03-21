@@ -1,8 +1,9 @@
 """
 Module Pièce E : Mobile Data - Analyse WhatsApp IA/NLP
-Analyste : Zakaria Khattar
-Date : Mars 2026
+Analyste : Ahmed dany
+Date : Février 2026
 Affaire : TechCorp - Fuite de données Projet Orion
+
 """
 
 import streamlit as st
@@ -14,38 +15,77 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import time
+# ═══════════════════════════════════════════════════════════════════
+# api key
+# ═══════════════════════════════════════════════════════════════════
+from google import genai
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION DE LA PAGE
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
+
+# Patterns suspects pour la détection NLP
+PATTERNS_SUSPECTS = {
+    'culinaire': {
+        'mots': ['gâteau', 'four', 'recette', 'ingrédients', 'cuisiner', 'cuire', 'pâtisserie'],
+        'points': 3,
+        'niveau': 'ÉLEVÉ'
+    },
+    'livraison': {
+        'mots': ['colis', 'paquet', 'livraison', 'marchandise', 'envoyer', 'expédition', 'canal'],
+        'points': 3,
+        'niveau': 'ÉLEVÉ'
+    },
+    'vague': {
+        'mots': ['chose', 'détails', 'élément', 'matériel', 'affaire', 'dossier', 'ressources'],
+        'points': 1.5,
+        'niveau': 'MOYEN'
+    },
+    'confidentialite': {
+        'mots': ['discret', 'secret', 'entre nous', 'privé', 'habituel', 'personnel', 'strictement'],
+        'points': 3,
+        'niveau': 'ÉLEVÉ'
+    },
+    'financier': {
+        'mots': ['paiement', 'compensation', 'arrangement', 'récompense', 'transaction', 'salaire'],
+        'points': 1.5,
+        'niveau': 'MOYEN'
+    }
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FONCTION PRINCIPALE
 # ═══════════════════════════════════════════════════════════════════
 
 def run():
     """Fonction principale du module Mobile NLP"""
     
-    # En-tête
-    st.title("📱 Pièce E : Mobile Data - Analyse WhatsApp IA/NLP")
-    st.markdown("**Analyste :** ahmed dany | **Outil :** NLP + ASR (Whisper)")
+
+
+    # 1. En-tête de la page
+    st.markdown("## 📱 Pôle d'Analyse : Mobile Data - Analyse WhatsApp IA/NLP")
+    
+    col_a, col_b, col_c = st.columns(3)
+    col_a.info("🧑‍💻 **Analyste DFIR :** Ahmed")
+    col_b.info("🎯 **Cible :** `mobile_Employe` (Jean Martin)")
+    col_c.info("🛠️ **Outils :** NLP + ASR (Whisper)")
     st.markdown("---")
-    
-    # Info box
-    st.info("""
-    🤖 **Module d'analyse automatisée WhatsApp**
-    
-    Ce module utilise l'Intelligence Artificielle pour détecter automatiquement 
-    le langage codé dans les communications WhatsApp (messages texte + notes vocales).
-    
-    **Technologies :** NLP (Natural Language Processing), ASR (Automatic Speech Recognition)
-    """)
-    
-    # ═══════════════════════════════════════════════════════════════
-    # TABS POUR ORGANISER LE CONTENU
-    # ═══════════════════════════════════════════════════════════════
-    
-    tab1, tab2, tab3, tab4 = st.tabs([
+
+    # Tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📝 Messages Texte", 
         "🎙️ Notes Vocales", 
         "📊 Résultats Globaux",
-        "🔐 Conformité Forensique"
+        "🔐 Conformité Forensique",
+        "📝 Rapport "
     ])
     
     # ═══════════════════════════════════════════════════════════════
@@ -55,78 +95,78 @@ def run():
     with tab1:
         st.header("📝 Analyse NLP - Messages Texte WhatsApp")
         
-        # Upload de la base de données
         st.subheader("1️⃣ Upload de la base de données")
         db_file = st.file_uploader(
             "Sélectionnez le fichier msgstore.db",
             type=['db'],
-            help="Base de données SQLite extraite de WhatsApp"
+            help="Base de données SQLite extraite de WhatsApp",
+            key="db_upload"
         )
         
         if db_file:
             st.success("✅ Fichier chargé : " + db_file.name)
             
-            # Bouton d'analyse
             if st.button("🚀 Analyser les messages", key="analyze_text"):
                 with st.spinner("Analyse NLP en cours..."):
-                    # Appeler la fonction d'analyse
-                    results = analyser_messages_whatsapp(db_file)
-                    
-                    # Sauvegarder dans session state
-                    st.session_state['text_results'] = results
-                
-                st.success("✅ Analyse terminée !")
+                    try:
+                        results = analyser_messages_whatsapp(db_file)
+                        st.session_state['text_results'] = results
+                        st.success("✅ Analyse terminée !")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de l'analyse : {str(e)}")
             
-            # Afficher les résultats si disponibles
             if 'text_results' in st.session_state:
                 afficher_resultats_texte(st.session_state['text_results'])
         else:
             st.warning("⚠️ Veuillez uploader un fichier msgstore.db pour commencer")
-    
+        st.session_state['db_file'] = db_file
     # ═══════════════════════════════════════════════════════════════
-    # TAB 2 : ANALYSE NOTES VOCALES
+    # TAB 2 : ANALYSE NOTES VOCALES (WHISPER DYNAMIQUE)
     # ═══════════════════════════════════════════════════════════════
     
     with tab2:
         st.header("🎙️ Analyse ASR - Notes Vocales WhatsApp")
         
-        # Upload des fichiers audio
         st.subheader("1️⃣ Upload des notes vocales")
         audio_files = st.file_uploader(
             "Sélectionnez les fichiers audio (.opus, .ogg, .m4a)",
             type=['opus', 'ogg', 'm4a'],
             accept_multiple_files=True,
-            help="Notes vocales extraites de WhatsApp"
+            help="Notes vocales extraites de WhatsApp",
+            key="audio_upload"
         )
         
         if audio_files:
             st.success(f"✅ {len(audio_files)} fichiers audio chargés")
             
-            # Option de transcription
-            st.subheader("2️⃣ Méthode de transcription")
-            method = st.radio(
-                "Choisissez la méthode :",
-                ["Transcriptions pré-existantes", "Whisper ASR (automatique)"],
-                help="Utilisez les transcriptions manuelles ou Whisper pour transcrire automatiquement"
-            )
+            # Info sur Whisper
+            st.info("""
+            🎙️ **Transcription avec Whisper (OpenAI)**
             
-            if method == "Transcriptions pré-existantes":
-                st.info("📝 Utilisation des transcriptions déjà effectuées")
-                
-                if st.button("🚀 Analyser les transcriptions", key="analyze_audio"):
-                    with st.spinner("Analyse NLP des transcriptions..."):
-                        results = analyser_audio_preexistant(audio_files)
+            - Modèle : `tiny` (optimisé pour CPU)
+            - Temps estimé : ~30-60 secondes par fichier
+            - Précision : ~70-75% (français)
+            
+            ⏱️ **Temps total estimé :** {:.1f} minutes
+            
+            💡 **Astuce :** Le modèle sera chargé une seule fois pour tous les fichiers.
+            """.format(len(audio_files) * 0.5))
+            
+            if st.button("🚀 Transcrire et Analyser avec Whisper", key="analyze_audio"):
+                with st.spinner(f"Transcription de {len(audio_files)} fichiers avec Whisper..."):
+                    try:
+                        results = transcrire_et_analyser_whisper(audio_files)
                         st.session_state['audio_results'] = results
-                    st.success("✅ Analyse terminée !")
-                
-                if 'audio_results' in st.session_state:
-                    afficher_resultats_audio(st.session_state['audio_results'])
+                        st.success("✅ Transcription et analyse terminées !")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la transcription : {str(e)}")
+                        st.info("💡 Vérifiez que Whisper est installé : pip install openai-whisper")
             
-            else:
-                st.warning("⚠️ Whisper ASR nécessite des ressources GPU. Utilisez les transcriptions pré-existantes.")
+            if 'audio_results' in st.session_state:
+                afficher_resultats_audio(st.session_state['audio_results'])
         else:
             st.warning("⚠️ Veuillez uploader des fichiers audio pour commencer")
-    
+        st.session_state['audio_files'] = audio_files
     # ═══════════════════════════════════════════════════════════════
     # TAB 3 : RÉSULTATS GLOBAUX
     # ═══════════════════════════════════════════════════════════════
@@ -159,7 +199,9 @@ def run():
         4. **Préservation** : Chain of Custody maintenue
         """)
         
-        # Hash des fichiers
+        db_file = st.session_state.get('db_file', None)
+        audio_files = st.session_state.get('audio_files', None)
+        
         if db_file or audio_files:
             st.subheader("🔐 Calcul des hash d'intégrité")
             
@@ -167,45 +209,58 @@ def run():
                 with st.spinner("Calcul en cours..."):
                     afficher_hash_files(db_file, audio_files)
         
-        # Chain of Custody
         st.subheader("📋 Chain of Custody")
         
         if st.button("Générer Chain of Custody"):
             generer_chain_of_custody()
 
+        # ═══════════════════════════════════════════════════════════════
+    # TAB 5 : RAPPORT IA
+    # ═══════════════════════════════════════════════════════════════
+
+    with tab5:
+        st.header("📝 Génération du Rapport d'Investigation Mobile")
+
+        st.info("""
+        Ce module génère un rapport d'investigation **limité au périmètre Mobile / WhatsApp / NLP / Audio**.
+        
+        Le rapport est produit à partir :
+        - des messages texte analysés
+        - des notes vocales transcrites et analysées
+        - d'un prompt forensic préparé par l'analyste
+        """)
+
+        text_results = st.session_state.get('text_results', [])
+        audio_results = st.session_state.get('audio_results', [])
+
+        if not text_results and not audio_results:
+            st.warning("⚠️ Veuillez d'abord analyser les messages texte et/ou les notes vocales.")
+        else:
+            st.success("✅ Les données nécessaires sont disponibles pour générer le rapport.")
+
+            if st.button("🚀 Générer le rapport d'investigation", key="generate_ai_report"):
+                with st.spinner("Génération du rapport avec Gemini 2.5 Flash..."):
+                    try:
+                        rapport = generer_rapport_mobile_ia(text_results, audio_results)
+                        st.session_state['rapport_mobile_ia'] = rapport
+                        st.success("✅ Rapport généré avec succès.")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de la génération du rapport : {str(e)}")
+
+            if 'rapport_mobile_ia' in st.session_state:
+                st.subheader("📄 Rapport généré")
+                st.markdown(st.session_state['rapport_mobile_ia'])
+
+                st.download_button(
+                    label="📥 Télécharger le rapport (.md)",
+                    data=st.session_state['rapport_mobile_ia'],
+                    file_name="rapport_investigation_mobile_ia.md",
+                    mime="text/markdown"
+                )
 
 # ═══════════════════════════════════════════════════════════════════
-# SYSTÈME NLP - DÉTECTION DE PATTERNS
+# SYSTÈME NLP - ANALYSE DE TEXTE
 # ═══════════════════════════════════════════════════════════════════
-
-# Définition des patterns suspects
-PATTERNS_SUSPECTS = {
-    'culinaire': {
-        'mots': ['gâteau', 'four', 'recette', 'ingrédients', 'cuisiner', 'cuire', 'pâtisserie'],
-        'points': 3,
-        'niveau': 'ÉLEVÉ'
-    },
-    'livraison': {
-        'mots': ['colis', 'paquet', 'livraison', 'marchandise', 'envoyer', 'expédition', 'canal'],
-        'points': 3,
-        'niveau': 'ÉLEVÉ'
-    },
-    'vague': {
-        'mots': ['chose', 'détails', 'élément', 'matériel', 'affaire', 'dossier', 'ressources'],
-        'points': 1.5,
-        'niveau': 'MOYEN'
-    },
-    'confidentialite': {
-        'mots': ['discret', 'secret', 'entre nous', 'privé', 'habituel', 'personnel', 'strictement'],
-        'points': 3,
-        'niveau': 'ÉLEVÉ'
-    },
-    'financier': {
-        'mots': ['paiement', 'compensation', 'arrangement', 'récompense', 'transaction', 'salaire'],
-        'points': 1.5,
-        'niveau': 'MOYEN'
-    }
-}
 
 def analyser_texte_nlp(texte):
     """Analyse un texte avec le système NLP de détection de patterns"""
@@ -236,6 +291,9 @@ def analyser_texte_nlp(texte):
     if len(patterns_detectes) >= 2:
         score += 3
     
+    # Plafonner à 20
+    score = min(score, 20)
+    
     # Niveau de risque
     if score >= 10:
         niveau_risque = "CRITIQUE"
@@ -260,109 +318,385 @@ def analyser_texte_nlp(texte):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# FONCTIONS D'ANALYSE
+# ANALYSE MESSAGES WHATSAPP
 # ═══════════════════════════════════════════════════════════════════
 
 def analyser_messages_whatsapp(db_file):
     """Analyse les messages WhatsApp depuis msgstore.db"""
     
     # Sauvegarder temporairement le fichier
-    with open("temp_msgstore.db", "wb") as f:
+    temp_path = "temp_msgstore.db"
+    with open(temp_path, "wb") as f:
         f.write(db_file.getbuffer())
     
-    # Connexion SQLite
-    conn = sqlite3.connect("temp_msgstore.db")
-    cursor = conn.cursor()
+    try:
+        # Connexion SQLite
+        conn = sqlite3.connect(temp_path)
+        cursor = conn.cursor()
+        
+        # Extraire les messages
+        query = """
+        SELECT 
+            _id,
+            key_from_me,
+            key_remote_jid,
+            data,
+            timestamp
+        FROM messages
+        WHERE data IS NOT NULL
+        ORDER BY timestamp
+        """
+        
+        cursor.execute(query)
+        messages = cursor.fetchall()
+        conn.close()
+        
+        # Analyser chaque message
+        resultats = []
+        for msg in messages:
+            msg_id, from_me, contact, texte, timestamp = msg
+            
+            if texte:
+                analyse = analyser_texte_nlp(texte)
+                
+                resultats.append({
+                    'id': msg_id,
+                    'texte': texte,
+                    'timestamp': timestamp,
+                    'contact': contact,
+                    'from_me': from_me,
+                    **analyse
+                })
+        
+        return resultats
     
-    # Extraire les messages
-    query = """
-    SELECT 
-        _id,
-        key_from_me,
-        key_remote_jid,
-        data,
-        timestamp
-    FROM messages
-    WHERE data IS NOT NULL
-    ORDER BY timestamp
+    finally:
+        # Nettoyer
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TRANSCRIPTION WHISPER DYNAMIQUE (OPTIMISÉ CPU i9)
+# ═══════════════════════════════════════════════════════════════════
+
+def transcrire_et_analyser_whisper(audio_files):
+    """
+    Transcrit les fichiers audio avec Whisper et analyse avec NLP
+    Optimisé pour CPU i9
     """
     
-    cursor.execute(query)
-    messages = cursor.fetchall()
-    conn.close()
-    
-    # Analyser chaque message
-    resultats = []
-    for msg in messages:
-        msg_id, from_me, contact, texte, timestamp = msg
+    try:
+        import whisper
+    except ImportError:
+        st.error("""
+        ❌ Whisper n'est pas installé !
         
-        if texte:
-            analyse = analyser_texte_nlp(texte)
+        Pour l'installer, exécutez :
+        ```
+        pip install openai-whisper
+        ```
+        """)
+        return []
+    
+    # Charger le modèle Whisper (une seule fois)
+    st.info("📥 Chargement du modèle Whisper 'tiny' (optimisé CPU)...")
+    
+    try:
+        # Modèle 'tiny' = le plus rapide sur CPU
+        model = whisper.load_model("tiny")
+        st.success("✅ Modèle chargé !")
+    except Exception as e:
+        st.error(f"❌ Erreur lors du chargement du modèle : {str(e)}")
+        return []
+    
+    # Créer un dossier temporaire
+    temp_dir = "temp_audio"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    resultats = []
+    
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    try:
+        for i, audio_file in enumerate(audio_files):
+            # Mise à jour progress
+            progress = (i + 1) / len(audio_files)
+            progress_bar.progress(progress)
+            status_text.text(f"Transcription {i+1}/{len(audio_files)} : {audio_file.name}")
             
-            resultats.append({
-                'id': msg_id,
-                'texte': texte,
-                'timestamp': timestamp,
-                'contact': contact,
-                'from_me': from_me,
-                **analyse
-            })
-    
-    # Nettoyer
-    os.remove("temp_msgstore.db")
-    
-    return resultats
-
-
-def analyser_audio_preexistant(audio_files):
-    """Analyse les transcriptions pré-existantes des notes vocales"""
-    
-    # Transcriptions simulées (à remplacer par vos vraies transcriptions)
-    transcriptions = [
-        {
-            'fichier': audio_files[i].name if i < len(audio_files) else f'audio_{i}.ogg',
-            'texte': get_transcription_simulee(i)
-        }
-        for i in range(min(15, len(audio_files)))
-    ]
-    
-    # Analyser chaque transcription
-    resultats = []
-    for i, trans in enumerate(transcriptions):
-        analyse = analyser_texte_nlp(trans['texte'])
+            # Sauvegarder temporairement le fichier audio
+            temp_audio_path = os.path.join(temp_dir, f"audio_{i}.ogg")
+            
+            with open(temp_audio_path, "wb") as f:
+                f.write(audio_file.getbuffer())
+            
+            # Mesurer le temps de transcription
+            start_time = time.time()
+            
+            try:
+                # Transcrire avec Whisper (optimisé CPU)
+                result = model.transcribe(
+                    temp_audio_path,
+                    language="fr",
+                    fp16=False,  # Désactiver FP16 pour CPU
+                    verbose=False
+                )
+                
+                texte_transcrit = result["text"].strip()
+                temps_transcription = time.time() - start_time
+                
+                # Analyser avec NLP
+                analyse = analyser_texte_nlp(texte_transcrit)
+                
+                # Stocker les résultats
+                resultats.append({
+                    'numero': i + 1,
+                    'fichier': audio_file.name,
+                    'texte': texte_transcrit,
+                    'nb_caracteres': len(texte_transcrit),
+                    'temps_transcription': temps_transcription,
+                    **analyse
+                })
+                
+            except Exception as e:
+                st.warning(f"⚠️ Erreur pour {audio_file.name} : {str(e)}")
+                continue
+            
+            finally:
+                # Nettoyer le fichier temporaire
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
         
-        resultats.append({
-            'numero': i + 1,
-            'fichier': trans['fichier'],
-            'texte': trans['texte'],
-            **analyse
-        })
+        # Nettoyer la progress bar
+        progress_bar.empty()
+        status_text.empty()
+        
+        return resultats
     
-    return resultats
-
-
-def get_transcription_simulee(index):
-    """Retourne une transcription simulée (à remplacer par vos vraies données)"""
-    
-    transcriptions = [
-        "Salut Marc, c'était sympa de se voir la semaine dernière. J'espère que tu vas bien.",
-        "Salut Marc alors j'ai réfléchi à ce dont on a parlé. Concernant les éléments techniques dont tu aurais besoin bon je pense que je peux te donner un coup de main. Par contre il faudra rester discret sur ce sujet.",
-        "Salut Marc c'est moi. Alors concernant la fameuse recette de grand-mère dont on a parlé bon je peux te dire que c'est quasiment prêt. J'ai rassemblé tous les ingrédients nécessaires. Le gâteau devrait être au four d'ici la fin de la semaine.",
-        "Marc salut. Alors on n'a pas encore parlé de la partie de l'arrangement financier. Il faudrait qu'on discute de la compensation.",
-        "Marc salut je t'appelle tard exprès. Alors voilà demain c'est le grand jour. Le colis va partir. J'ai tout emballé soigneusement. Dedans tu vas trouver tous les éléments dont on a parlé. Il faut vraiment que ça reste strictement entre nous. J'ai utilisé le canal habituel. La marchandise sera en route demain soir.",
-    ]
-    
-    return transcriptions[index % len(transcriptions)]
+    finally:
+        # Nettoyer le dossier temporaire
+        if os.path.exists(temp_dir):
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════
 # FONCTIONS D'AFFICHAGE
 # ═══════════════════════════════════════════════════════════════════
+def generer_rapport_mobile_ia(text_results, audio_results):
+    """
+    Génère un rapport d'investigation forensic mobile via Gemini 2.5 Flash.
+    Le rapport est limité au périmètre Mobile / WhatsApp / NLP / Audio.
+    """
+
+    try:
+        from google import genai
+    except ImportError:
+        raise Exception(
+            "Le SDK Google GenAI n'est pas installé. Installez-le avec : pip install google-genai"
+        )
+
+    # =========================
+    # Préparation des statistiques
+    # =========================
+    total_text = len(text_results)
+    total_audio = len(audio_results)
+    total = total_text + total_audio
+
+    suspects_text = len([r for r in text_results if r.get('est_suspect', False)])
+    suspects_audio = len([r for r in audio_results if r.get('est_suspect', False)])
+    suspects_total = suspects_text + suspects_audio
+
+    critiques_text = len([r for r in text_results if r.get('niveau_risque') == 'CRITIQUE'])
+    critiques_audio = len([r for r in audio_results if r.get('niveau_risque') == 'CRITIQUE'])
+    critiques_total = critiques_text + critiques_audio
+
+    score_moyen_text = (
+        sum(r.get('score', 0) for r in text_results) / total_text
+        if total_text > 0 else 0
+    )
+    score_moyen_audio = (
+        sum(r.get('score', 0) for r in audio_results) / total_audio
+        if total_audio > 0 else 0
+    )
+    score_moyen_global = (
+        sum(r.get('score', 0) for r in (text_results + audio_results)) / total
+        if total > 0 else 0
+    )
+
+    # Top éléments suspects
+    top_text = sorted(text_results, key=lambda x: x.get('score', 0), reverse=True)[:5]
+    top_audio = sorted(audio_results, key=lambda x: x.get('score', 0), reverse=True)[:5]
+
+    # Patterns globaux
+    patterns_count = {}
+    for item in text_results + audio_results:
+        for p in item.get('patterns_detectes', []):
+            categorie = p.get('categorie', 'inconnu')
+            patterns_count[categorie] = patterns_count.get(categorie, 0) + 1
+
+    top_patterns = sorted(patterns_count.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    # =========================
+    # Données compactes envoyées au modèle
+    # =========================
+    payload = {
+        "scope": "Investigation Mobile uniquement",
+        "source_text_total": total_text,
+        "source_audio_total": total_audio,
+        "total_communications": total,
+        "suspects_text": suspects_text,
+        "suspects_audio": suspects_audio,
+        "suspects_total": suspects_total,
+        "critiques_text": critiques_text,
+        "critiques_audio": critiques_audio,
+        "critiques_total": critiques_total,
+        "score_moyen_text": round(score_moyen_text, 2),
+        "score_moyen_audio": round(score_moyen_audio, 2),
+        "score_moyen_global": round(score_moyen_global, 2),
+        "top_patterns": top_patterns,
+        "top_messages_suspects": [
+            {
+                "id": x.get("id"),
+                "texte": x.get("texte"),
+                "score": x.get("score"),
+                "niveau_risque": x.get("niveau_risque"),
+                "patterns_detectes": x.get("patterns_detectes", [])
+            }
+            for x in top_text
+        ],
+        "top_audios_suspects": [
+            {
+                "fichier": x.get("fichier"),
+                "texte": x.get("texte"),
+                "score": x.get("score"),
+                "niveau_risque": x.get("niveau_risque"),
+                "patterns_detectes": x.get("patterns_detectes", [])
+            }
+            for x in top_audio
+        ]
+    }
+
+    # =========================
+    # TON PROMPT FORENSIC
+    # Remplace le texte ci-dessous par ton prompt exact si tu l’as déjà prêt.
+    # =========================
+    prompt_rapport = f"""
+Tu es un expert senior en investigation numérique (DFIR), spécialisé dans l’analyse forensic mobile (WhatsApp, messages texte, notes vocales, NLP, ASR).
+
+═══════════════════════════════════════════════════════════
+CONTEXTE DE L'AFFAIRE
+═══════════════════════════════════════════════════════════
+
+Nom de l'affaire : TechCorp — Exfiltration de données  
+Examinateur : Ahmed (à adapter si besoin)
+
+Cette analyse concerne EXCLUSIVEMENT le périmètre mobile :
+- Messages WhatsApp (base msgstore.db)
+- Notes vocales transcrites (Whisper ASR)
+- Analyse NLP des communications
+
+═══════════════════════════════════════════════════════════
+OBJECTIF
+═══════════════════════════════════════════════════════════
+
+Générer un **rapport d’investigation forensic professionnel**, structuré, exploitable
+dans un contexte académique ou judiciaire.
+
+═══════════════════════════════════════════════════════════
+RÈGLES STRICTES
+═══════════════════════════════════════════════════════════
+
+- Ne parler QUE de la partie mobile (ne jamais mentionner réseau, PCAP, système…)
+- Ne JAMAIS inventer de données
+- Se baser UNIQUEMENT sur les données fournies
+- Style professionnel, neutre, analytique
+- Différencier clairement :
+  1. faits observés
+  2. résultats algorithmiques (NLP / IA)
+  3. interprétation forensic
+  4. limites de l’analyse
+
+- Mentionner que :
+  👉 L’analyse IA est une aide et doit être validée par un analyste humain
+
+- Respecter les principes :
+  - ISO/IEC 27037
+  - Intégrité des preuves
+  - Traçabilité de l’analyse
+
+═══════════════════════════════════════════════════════════
+STRUCTURE OBLIGATOIRE DU RAPPORT
+═══════════════════════════════════════════════════════════
+
+1. Objet de l'investigation  
+2. Périmètre analysé  
+3. Méthodologie  
+4. Analyse des messages texte  
+5. Analyse des notes vocales  
+6. Corrélation globale des résultats  
+7. Identification des éléments suspects  
+8. Analyse du niveau de risque  
+9. Limites de l’analyse  
+10. Conclusion forensic  
+11. Recommandations  
+
+═══════════════════════════════════════════════════════════
+DONNÉES D'ENTRÉE
+═══════════════════════════════════════════════════════════
+
+Voici les données issues de l’analyse :
+
+{json.dumps(payload, indent=2, ensure_ascii=False)}
+
+═══════════════════════════════════════════════════════════
+STYLE DE SORTIE
+═══════════════════════════════════════════════════════════
+
+- Rapport structuré en Markdown
+- Sections bien séparées
+- Ton professionnel
+- Utiliser des indicateurs de risque :
+  🔴 Critique
+  🟠 Élevé
+  🟡 Moyen
+  🟢 Faible
+
+- Ne pas générer de JSON
+- Générer uniquement du texte lisible (rapport final)
+
+"""
+
+    # =========================
+    # Appel Gemini
+    # =========================
+    client = genai.Client(api_key="AIzaSyCZhbV04u5fry9XDkwfyCpEWW-SerCJGy8")
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt_rapport
+    )
+
+    texte = getattr(response, "text", None)
+    if not texte:
+        raise Exception("Réponse vide reçue depuis Gemini.")
+
+    return texte
+
 
 def afficher_resultats_texte(results):
     """Affiche les résultats de l'analyse des messages texte"""
     
     st.subheader("📊 Résultats de l'analyse")
+
+    if not results:
+        st.warning("Aucun message à afficher")
+        return
     
     # Statistiques globales
     suspects = [r for r in results if r['est_suspect']]
@@ -380,7 +714,7 @@ def afficher_resultats_texte(results):
         score_max = max([r['score'] for r in results])
         st.metric("Score maximum", f"{score_max:.1f}/20")
     
-    # Graphique de répartition
+    # Graphique
     st.subheader("📈 Répartition par niveau de risque")
     
     niveaux = {}
@@ -401,7 +735,7 @@ def afficher_resultats_texte(results):
     )
     st.plotly_chart(fig, use_container_width=True)
     
-    # Top 3 messages suspects
+    # Top 3
     st.subheader("🎯 Top 3 des messages les plus suspects")
     
     top_3 = sorted(results, key=lambda x: x['score'], reverse=True)[:3]
@@ -410,30 +744,17 @@ def afficher_resultats_texte(results):
         with st.expander(f"#{i} - Score {msg['score']:.1f}/20 - {msg['couleur']} {msg['niveau_risque']}"):
             st.markdown(f"**Message :** {msg['texte']}")
             st.markdown(f"**Score :** {msg['score']:.1f}/20")
-            st.markdown(f"**Niveau :** {msg['niveau_risque']}")
             
             if msg['patterns_detectes']:
                 st.markdown("**Patterns détectés :**")
                 for pattern in msg['patterns_detectes']:
-                    st.markdown(f"- **{pattern['categorie']}** : {', '.join(pattern['mots_trouves'])} (+{pattern['points']} pts)")
+                    st.markdown(f"- **{pattern['categorie']}** : {', '.join(pattern['mots_trouves'])}")
     
-    # Tableau détaillé
-    st.subheader("📋 Tableau détaillé des messages")
-    
-    df = pd.DataFrame([{
-        'ID': r['id'],
-        'Score': f"{r['score']:.1f}",
-        'Niveau': r['niveau_risque'],
-        'Aperçu': r['texte'][:50] + '...' if len(r['texte']) > 50 else r['texte']
-    } for r in results])
-    
-    st.dataframe(df, use_container_width=True)
-    
-    # Bouton de téléchargement
+    # Téléchargement
     st.download_button(
         label="📥 Télécharger le rapport JSON",
         data=json.dumps(results, indent=2, ensure_ascii=False),
-        file_name="rapport_messages_whatsapp.json",
+        file_name="rapport_messages.json",
         mime="application/json"
     )
 
@@ -443,7 +764,11 @@ def afficher_resultats_audio(results):
     
     st.subheader("📊 Résultats de l'analyse")
     
-    # Statistiques globales
+    if not results:
+        st.warning("Aucune transcription à afficher")
+        return
+    
+    # Statistiques
     suspects = [r for r in results if r['est_suspect']]
     critiques = [r for r in results if r['niveau_risque'] == 'CRITIQUE']
     
@@ -459,190 +784,418 @@ def afficher_resultats_audio(results):
         score_max = max([r['score'] for r in results])
         st.metric("Score maximum", f"{score_max:.1f}/20")
     
-    # Top 3 notes suspectes
-    st.subheader("🎯 Top 3 des notes vocales les plus suspectes")
+    # Info Whisper
+    temps_moyen = sum([r.get('temps_transcription', 0) for r in results]) / len(results)
+    st.info(f"""
+    ⏱️ **Performance Whisper :**
+    - Temps moyen : {temps_moyen:.1f}s/fichier
+    - Temps total : {sum([r.get('temps_transcription', 0) for r in results]):.1f}s
+    """)
+    
+    # Top 3
+    st.subheader("🎯 Top 3 des notes les plus suspectes")
     
     top_3 = sorted(results, key=lambda x: x['score'], reverse=True)[:3]
     
     for i, note in enumerate(top_3, 1):
-        with st.expander(f"#{i} - {note['fichier']} - Score {note['score']:.1f}/20 - {note['couleur']} {note['niveau_risque']}"):
-            st.markdown(f"**Fichier :** {note['fichier']}")
-            st.markdown(f"**Transcription :** {note['texte']}")
+        with st.expander(f"#{i} - {note['fichier']} - Score {note['score']:.1f}/20"):
+            st.text_area("Transcription", note['texte'], height=100, key=f"t_{i}")
             st.markdown(f"**Score :** {note['score']:.1f}/20")
-            st.markdown(f"**Niveau :** {note['niveau_risque']}")
             
             if note['patterns_detectes']:
-                st.markdown("**Patterns détectés :**")
-                for pattern in note['patterns_detectes']:
-                    st.markdown(f"- **{pattern['categorie']}** : {', '.join(pattern['mots_trouves'])} (+{pattern['points']} pts)")
+                st.markdown("**Patterns :**")
+                for p in note['patterns_detectes']:
+                    st.markdown(f"- {p['categorie']}: {', '.join(p['mots_trouves'])}")
     
-    # Bouton de téléchargement
+    # Téléchargement
     st.download_button(
         label="📥 Télécharger le rapport JSON",
         data=json.dumps(results, indent=2, ensure_ascii=False),
-        file_name="rapport_notes_vocales.json",
+        file_name="rapport_audio.json",
         mime="application/json"
     )
 
 
 def afficher_vue_globale():
-    """Affiche la vue globale combinant texte + audio"""
-    
+    """Vue globale dynamique avec indicateurs, graphiques et interprétation forensic"""
+
     text_results = st.session_state.get('text_results', [])
     audio_results = st.session_state.get('audio_results', [])
-    
+
     total_text = len(text_results)
     total_audio = len(audio_results)
     total = total_text + total_audio
-    
-    suspects_text = len([r for r in text_results if r['est_suspect']])
-    suspects_audio = len([r for r in audio_results if r['est_suspect']])
+
+    if total == 0:
+        st.info("ℹ️ Aucune donnée analysée pour le moment")
+        return
+
+    # =========================
+    # Comptage global
+    # =========================
+    suspects_text = len([r for r in text_results if r.get('est_suspect', False)])
+    suspects_audio = len([r for r in audio_results if r.get('est_suspect', False)])
     suspects_total = suspects_text + suspects_audio
-    
-    # Métriques globales
-    st.subheader("📊 Statistiques globales")
-    
+
+    critiques_text = len([r for r in text_results if r.get('niveau_risque') == 'CRITIQUE'])
+    critiques_audio = len([r for r in audio_results if r.get('niveau_risque') == 'CRITIQUE'])
+    critiques_total = critiques_text + critiques_audio
+
+    score_moyen_text = (
+        sum(r.get('score', 0) for r in text_results) / total_text
+        if total_text > 0 else 0
+    )
+    score_moyen_audio = (
+        sum(r.get('score', 0) for r in audio_results) / total_audio
+        if total_audio > 0 else 0
+    )
+    score_moyen_global = (
+        sum(r.get('score', 0) for r in (text_results + audio_results)) / total
+        if total > 0 else 0
+    )
+
+    taux_text = (suspects_text / total_text * 100) if total_text > 0 else 0
+    taux_audio = (suspects_audio / total_audio * 100) if total_audio > 0 else 0
+    taux_total = (suspects_total / total * 100) if total > 0 else 0
+
+    # =========================
+    # Niveau global
+    # =========================
+    if taux_total >= 60 or critiques_total >= 3 or score_moyen_global >= 8:
+        niveau_global = "CRITIQUE"
+        couleur = "🔴"
+        couleur_css = "#DC2626"
+    elif taux_total >= 40 or score_moyen_global >= 6:
+        niveau_global = "ÉLEVÉ"
+        couleur = "🟠"
+        couleur_css = "#EA580C"
+    elif taux_total >= 20 or score_moyen_global >= 3:
+        niveau_global = "MOYEN"
+        couleur = "🟡"
+        couleur_css = "#EAB308"
+    else:
+        niveau_global = "FAIBLE"
+        couleur = "🟢"
+        couleur_css = "#16A34A"
+
+    # =========================
+    # Patterns dominants
+    # =========================
+    patterns_count = {}
+    all_results = text_results + audio_results
+
+    for r in all_results:
+        for p in r.get('patterns_detectes', []):
+            categorie = p.get('categorie', 'inconnu')
+            patterns_count[categorie] = patterns_count.get(categorie, 0) + 1
+
+    top_patterns = sorted(patterns_count.items(), key=lambda x: x[1], reverse=True)
+
+    # =========================
+    # Niveau dominant
+    # =========================
+    niveaux_count = {"CRITIQUE": 0, "ÉLEVÉ": 0, "MOYEN": 0, "NORMAL": 0}
+    for r in all_results:
+        niveau = r.get("niveau_risque", "NORMAL")
+        if niveau in niveaux_count:
+            niveaux_count[niveau] += 1
+
+    niveau_dominant = max(niveaux_count, key=niveaux_count.get)
+
+    # =========================
+    # Source la plus risquée
+    # =========================
+    if total_text == 0 and total_audio > 0:
+        source_risque = "Notes vocales"
+    elif total_audio == 0 and total_text > 0:
+        source_risque = "Messages texte"
+    elif taux_text > taux_audio:
+        source_risque = "Messages texte"
+    elif taux_audio > taux_text:
+        source_risque = "Notes vocales"
+    else:
+        source_risque = "Équivalent entre les deux sources"
+
+    # =========================
+    # HEADER GLOBAL
+    # =========================
+    st.markdown("## 📊 Vue d'Ensemble de l'Analyse")
+    st.markdown(
+        f"""
+        <div style="
+            background-color: #F8FAFC;
+            border-left: 6px solid {couleur_css};
+            padding: 18px;
+            border-radius: 10px;
+            margin-bottom: 15px;">
+            <h4 style="margin: 0; color: {couleur_css};">
+                {couleur} Niveau Global d'Alerte : {niveau_global}
+            </h4>
+            <p style="margin-top: 8px; color: #334155;">
+                Cette synthèse est générée automatiquement à partir des analyses
+                effectuées dans les onglets <b>Messages Texte</b> et <b>Notes Vocales</b>.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # =========================
+    # KPIs principaux
+    # =========================
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.metric("Total communications", total)
+
     with col2:
-        st.metric("Messages texte", total_text)
+        st.metric("Éléments suspects", f"{suspects_total}", f"{taux_total:.1f}%")
+
     with col3:
-        st.metric("Notes vocales", total_audio)
+        st.metric("Éléments critiques", critiques_total)
+
     with col4:
-        st.metric("Suspects détectés", f"{suspects_total} ({suspects_total/total*100:.0f}%)")
-    
+        st.metric("Score moyen global", f"{score_moyen_global:.1f}/20")
+
+    st.markdown("---")
+
+    # =========================
+    # Répartition Texte vs Audio
+    # =========================
+    st.subheader("📂 Répartition par Source")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("### 📝 Messages Texte")
+        st.metric("Total texte", total_text)
+        st.metric("Suspects texte", f"{suspects_text}/{total_text}" if total_text > 0 else "0/0")
+        st.metric("Score moyen texte", f"{score_moyen_text:.1f}/20")
+        st.progress(min(int(taux_text), 100))
+        st.caption(f"Taux de suspicion texte : {taux_text:.1f}%")
+
+    with c2:
+        st.markdown("### 🎙️ Notes Vocales")
+        st.metric("Total audio", total_audio)
+        st.metric("Suspects audio", f"{suspects_audio}/{total_audio}" if total_audio > 0 else "0/0")
+        st.metric("Score moyen audio", f"{score_moyen_audio:.1f}/20")
+        st.progress(min(int(taux_audio), 100))
+        st.caption(f"Taux de suspicion audio : {taux_audio:.1f}%")
+
+    st.markdown("---")
+
+    # =========================
     # Graphique comparatif
+    # =========================
     st.subheader("📈 Comparaison Texte vs Audio")
-    
-    data = {
+
+    data_compare = pd.DataFrame({
         'Source': ['Messages Texte', 'Notes Vocales'],
         'Total': [total_text, total_audio],
         'Suspects': [suspects_text, suspects_audio],
-        '% Suspects': [suspects_text/total_text*100 if total_text > 0 else 0, 
-                       suspects_audio/total_audio*100 if total_audio > 0 else 0]
-    }
-    
-    df = pd.DataFrame(data)
-    
-    fig = go.Figure(data=[
-        go.Bar(name='Total', x=df['Source'], y=df['Total']),
-        go.Bar(name='Suspects', x=df['Source'], y=df['Suspects'])
-    ])
-    
-    fig.update_layout(
-        title='Comparaison des sources de données',
-        barmode='group',
-        xaxis_title='Source',
-        yaxis_title='Nombre de communications'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Observations clés
-    st.subheader("🔍 Observations clés")
-    
-    st.markdown(f"""
-    - **Total de communications analysées :** {total}
-    - **Communications suspectes :** {suspects_total} ({suspects_total/total*100:.0f}%)
-    - **Taux de suspicion messages texte :** {suspects_text/total_text*100:.0f}%
-    - **Taux de suspicion notes vocales :** {suspects_audio/total_audio*100:.0f}%
-    
-    **Conclusion :** Le suspect utilise plusieurs canaux de communication (texte + voix) 
-    pour coordonner ses activités suspectes avec le concurrent.
-    """)
+        '% Suspects': [taux_text, taux_audio],
+        'Score Moyen': [score_moyen_text, score_moyen_audio]
+    })
 
+    fig_compare = px.bar(
+        data_compare,
+        x='Source',
+        y=['Total', 'Suspects'],
+        barmode='group',
+        title="Comparaison du volume et des éléments suspects"
+    )
+    st.plotly_chart(fig_compare, use_container_width=True)
+
+    # =========================
+    # Répartition des niveaux
+    # =========================
+    st.subheader("🎯 Répartition des Niveaux de Risque")
+
+    niveaux_df = pd.DataFrame({
+        'Niveau': list(niveaux_count.keys()),
+        'Nombre': list(niveaux_count.values())
+    })
+
+    fig_niveaux = px.pie(
+        niveaux_df,
+        values='Nombre',
+        names='Niveau',
+        title="Distribution des niveaux de risque"
+    )
+    st.plotly_chart(fig_niveaux, use_container_width=True)
+
+    # =========================
+    # Top patterns détectés
+    # =========================
+    st.subheader("🧩 Patterns Linguistiques Dominants")
+
+    if top_patterns:
+        patterns_df = pd.DataFrame(top_patterns[:5], columns=['Pattern', 'Occurrences'])
+        fig_patterns = px.bar(
+            patterns_df,
+            x='Pattern',
+            y='Occurrences',
+            title="Top 5 des patterns détectés"
+        )
+        st.plotly_chart(fig_patterns, use_container_width=True)
+
+        for i, (pattern, nb) in enumerate(top_patterns[:5], start=1):
+            st.markdown(f"**{i}. {pattern}** — {nb} occurrence(s)")
+    else:
+        st.info("Aucun pattern significatif détecté dans les données analysées.")
+
+    st.markdown("---")
+
+    # =========================
+    # Top éléments suspects
+    # =========================
+    st.subheader("🚨 Top 5 des Communications les Plus Suspectes")
+
+    top_suspects = sorted(all_results, key=lambda x: x.get('score', 0), reverse=True)[:5]
+
+    if top_suspects:
+        for i, item in enumerate(top_suspects, start=1):
+            type_source = "Texte" if item in text_results else "Audio"
+            titre = item.get('fichier', f"Communication #{i}")
+            contenu = item.get('texte', 'Contenu non disponible')
+
+            with st.expander(
+                f"#{i} | {type_source} | Score {item.get('score', 0):.1f}/20 | {item.get('couleur', '⚪')} {item.get('niveau_risque', 'N/A')}"
+            ):
+                if type_source == "Audio":
+                    st.markdown(f"**Fichier audio :** {titre}")
+
+                st.markdown(f"**Contenu :** {contenu}")
+                st.markdown(f"**Score :** {item.get('score', 0):.1f}/20")
+                st.markdown(f"**Niveau :** {item.get('niveau_risque', 'N/A')}")
+
+                patterns = item.get('patterns_detectes', [])
+                if patterns:
+                    st.markdown("**Patterns détectés :**")
+                    for p in patterns:
+                        st.markdown(
+                            f"- **{p.get('categorie', 'inconnu')}** : {', '.join(p.get('mots_trouves', []))}"
+                        )
+                else:
+                    st.caption("Aucun pattern détaillé disponible pour cet élément.")
+    else:
+        st.info("Aucune communication suspecte majeure à afficher.")
+
+    st.markdown("---")
+
+    # =========================
+    # Interprétation forensic dynamique
+    # =========================
+    st.subheader("🧠 Interprétation Forensique")
+
+    if top_patterns:
+        top_patterns_str = ", ".join([f"{nom} ({nb})" for nom, nb in top_patterns[:3]])
+    else:
+        top_patterns_str = "aucun pattern dominant"
+
+    st.markdown(f"""
+### {couleur} Conclusion automatisée
+
+**1. Synthèse quantitative**
+- Total analysé : **{total}** communication(s)
+- Communications suspectes : **{suspects_total} ({taux_total:.1f}%)**
+- Communications critiques : **{critiques_total}**
+- Niveau dominant observé : **{niveau_dominant}**
+
+**2. Corrélation des sources**
+L'analyse combine les résultats issus :
+- des **messages texte WhatsApp**
+- des **notes vocales transcrites par Whisper**
+
+La source actuellement la plus exposée est : **{source_risque}**
+
+**3. Lecture technique**
+Le moteur d'analyse a détecté principalement les patterns suivants :
+**{top_patterns_str}**.
+
+Le score moyen global observé est de **{score_moyen_global:.1f}/20**, ce qui classe
+automatiquement l'ensemble au niveau **{niveau_global}**.
+
+**4. Interprétation forensic**
+Ces résultats constituent une **aide à l'interprétation** basée sur :
+- le contenu textuel analysé,
+- les expressions codées ou ambiguës détectées,
+- la répétition des patterns suspects,
+- la convergence entre plusieurs sources numériques.
+
+Dans une démarche forensic, cela permet de **prioriser les éléments à examiner**
+et de cibler les communications nécessitant une validation humaine.
+
+**5. Conformité méthodologique**
+Cette vue d'ensemble reste cohérente avec une approche forensic :
+- préservation des données sources,
+- analyse traçable,
+- corrélation multi-source,
+- validation finale par analyste DFIR.
+
+**6. Conclusion**
+Le système estime que le dossier présente un niveau de risque global **{niveau_global}**.
+Une corrélation complémentaire avec les artefacts système, réseau, temporels
+et contextuels est recommandée pour confirmer l'interprétation.
+""")
+
+    # =========================
+    # Bouton de téléchargement
+    # =========================
+    st.markdown("---")
+    resume_global = {
+        "total_text": total_text,
+        "total_audio": total_audio,
+        "total_communications": total,
+        "suspects_text": suspects_text,
+        "suspects_audio": suspects_audio,
+        "suspects_total": suspects_total,
+        "taux_text": round(taux_text, 2),
+        "taux_audio": round(taux_audio, 2),
+        "taux_total": round(taux_total, 2),
+        "score_moyen_text": round(score_moyen_text, 2),
+        "score_moyen_audio": round(score_moyen_audio, 2),
+        "score_moyen_global": round(score_moyen_global, 2),
+        "niveau_global": niveau_global,
+        "niveau_dominant": niveau_dominant,
+        "source_risque": source_risque,
+        "top_patterns": top_patterns[:5]
+    }
+
+    st.download_button(
+        label="📥 Télécharger le résumé global (JSON)",
+        data=json.dumps(resume_global, indent=2, ensure_ascii=False),
+        file_name="resume_global_forensic.json",
+        mime="application/json"
+    )
 
 def afficher_hash_files(db_file, audio_files):
-    """Calcule et affiche les hash MD5/SHA256"""
+    """Hash des fichiers"""
     
-    st.subheader("🔐 Hash d'intégrité")
-    
-    # Hash de la base de données
     if db_file:
-        md5_hash = hashlib.md5(db_file.getvalue()).hexdigest()
-        sha256_hash = hashlib.sha256(db_file.getvalue()).hexdigest()
-        
-        st.markdown("**msgstore.db**")
-        st.code(f"MD5    : {md5_hash}")
-        st.code(f"SHA256 : {sha256_hash}")
+        md5 = hashlib.md5(db_file.getvalue()).hexdigest()
+        st.code(f"msgstore.db - MD5: {md5}")
     
-    # Hash des fichiers audio
     if audio_files:
-        st.markdown("**Notes vocales**")
-        for audio in audio_files[:5]:  # Limiter à 5 pour l'affichage
-            md5_hash = hashlib.md5(audio.getvalue()).hexdigest()
-            st.markdown(f"- **{audio.name}**")
-            st.code(f"MD5: {md5_hash}")
-        
-        if len(audio_files) > 5:
-            st.info(f"... et {len(audio_files) - 5} autres fichiers")
-    
-    st.success("✅ Hash calculés avec succès - Intégrité garantie")
+        for audio in audio_files[:3]:
+            md5 = hashlib.md5(audio.getvalue()).hexdigest()
+            st.code(f"{audio.name} - MD5: {md5}")
 
 
 def generer_chain_of_custody():
-    """Génère un document Chain of Custody"""
+    """Chain of Custody"""
     
-    chain_of_custody = f"""
-╔══════════════════════════════════════════════════════════════════════╗
-║                    CHAÎNE DE GARDE (CHAIN OF CUSTODY)                ║
-║                  PIÈCE À CONVICTION - MOBILE DATA                    ║
-╚══════════════════════════════════════════════════════════════════════╝
-
-INFORMATIONS SUR LE CAS
-═══════════════════════════════════════════════════════════════════════
-
-Numéro de Cas        : TECHCORP-2026-001
-Affaire              : Fuite de données - Projet Orion
-Pièce à Conviction   : Pièce E - Mobile Data WhatsApp
-Type d'Appareil      : Samsung Galaxy S23
-Système d'Exploitation : Android 14
-Version WhatsApp     : 2.26.1.72
-Analyste             : ahmed dany
-
-MÉTHODE D'ACQUISITION
-═══════════════════════════════════════════════════════════════════════
-
-Type d'Extraction    : Logical Extraction
-Standard Appliqué    : ISO/IEC 27037:2012
-
-CHRONOLOGIE
-═══════════════════════════════════════════════════════════════════════
-
-Date de saisie       : 15 Janvier 2026, 14:30
-Date d'extraction    : 15 Janvier 2026, 15:00
-Date d'analyse       : {datetime.now().strftime('%d %B %Y, %H:%M')}
-
-DÉCLARATION
-═══════════════════════════════════════════════════════════════════════
-
-Je certifie que l'intégrité des preuves a été maintenue durant toute
-la chaîne de traitement, conformément aux standards ISO 27037.
-
-Signature Analyste : _______________________
-
-Date : {datetime.now().strftime('%d/%m/%Y')}
-
-╔══════════════════════════════════════════════════════════════════════╗
-║              FIN DU DOCUMENT DE CHAÎNE DE GARDE                      ║
-╚══════════════════════════════════════════════════════════════════════╝
+    doc = f"""
+CHAIN OF CUSTODY - TECHCORP-2026-001
+Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}
+Analyste : Ahmed Dany
+Méthode ASR : Whisper 'tiny' (CPU optimisé)
+Standard : ISO 27037
 """
     
-    st.text_area("Chain of Custody", chain_of_custody, height=400)
-    
-    st.download_button(
-        label="📥 Télécharger Chain of Custody",
-        data=chain_of_custody,
-        file_name=f"chain_of_custody_{datetime.now().strftime('%Y%m%d')}.txt",
-        mime="text/plain"
-    )
+    st.text_area("Chain of Custody", doc, height=200)
+    st.download_button("📥 Télécharger", doc, "chain_of_custody.txt")
 
-
-# ═══════════════════════════════════════════════════════════════════
-# POINT D'ENTRÉE
-# ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     run()
