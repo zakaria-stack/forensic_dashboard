@@ -8,7 +8,7 @@ Follow these steps to set up the project on your local machine:
 
 **1. Clone the repository to your local machine:**
 ```bash
-git clone [https://github.com/zakaria-stack/forensic_dashboard](https://github.com/zakaria-stack/forensic_dashboard)
+git clone https://github.com/zakaria-stack/forensic_dashboard
 
 2. Navigate to the project directory:
 Bash
