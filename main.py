@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
 
-# Kan-importiw l-fichiers dyal l-equipe kamlin (kima f ls)
+# Kan-importiw l-fichiers dyal l-equipe kamlin
 import windows_usb_zakaria
 import pcap
 import linux
