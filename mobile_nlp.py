@@ -5,6 +5,9 @@ Date : Février 2026
 Affaire : TechCorp - Fuite de données Projet Orion
 
 """
+import os
+from dotenv import load_dotenv
+from google import genai
 
 import streamlit as st
 import sqlite3
@@ -16,17 +19,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import time
-# ═══════════════════════════════════════════════════════════════════
-# api key
-# ═══════════════════════════════════════════════════════════════════
-import google.generativeai as genai
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-API_KEY = os.getenv("GEMINI_API_KEY")
-
+from gemini_client import generer_contenu_gemini
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
@@ -587,106 +580,120 @@ def generer_rapport_mobile_ia(text_results, audio_results):
     # Remplace le texte ci-dessous par ton prompt exact si tu l’as déjà prêt.
     # =========================
     prompt_rapport = f"""
-Tu es un expert senior en investigation numérique (DFIR), spécialisé dans l’analyse forensic mobile (WhatsApp, messages texte, notes vocales, NLP, ASR).
+    Tu es un expert senior en investigation numérique (DFIR), spécialisé dans l’analyse forensic mobile.
 
 ═══════════════════════════════════════════════════════════
-CONTEXTE DE L'AFFAIRE
+CONTEXTE
 ═══════════════════════════════════════════════════════════
 
-Nom de l'affaire : TechCorp — Exfiltration de données  
-Examinateur : Ahmed (à adapter si besoin)
+Affaire : TechCorp — Suspicion d’exfiltration de données  
+Périmètre : Analyse mobile uniquement (WhatsApp, messages texte, notes vocales)
 
-Cette analyse concerne EXCLUSIVEMENT le périmètre mobile :
-- Messages WhatsApp (base msgstore.db)
-- Notes vocales transcrites (Whisper ASR)
-- Analyse NLP des communications
+Les données analysées proviennent :
+- d’extractions WhatsApp (msgstore.db)
+- de transcriptions audio (Whisper)
+- d’une analyse NLP des communications
 
 ═══════════════════════════════════════════════════════════
 OBJECTIF
 ═══════════════════════════════════════════════════════════
 
-Générer un **rapport d’investigation forensic professionnel**, structuré, exploitable
-dans un contexte académique ou judiciaire.
+Rédiger un rapport d’investigation forensic structuré,
+dans un style proche d’un rapport d’expert judiciaire (type FBI),
+basé exclusivement sur les éléments fournis.
 
 ═══════════════════════════════════════════════════════════
 RÈGLES STRICTES
 ═══════════════════════════════════════════════════════════
 
-- Ne parler QUE de la partie mobile (ne jamais mentionner réseau, PCAP, système…)
-- Ne JAMAIS inventer de données
-- Se baser UNIQUEMENT sur les données fournies
-- Style professionnel, neutre, analytique
-- Différencier clairement :
-  1. faits observés
-  2. résultats algorithmiques (NLP / IA)
-  3. interprétation forensic
-  4. limites de l’analyse
+- Ne jamais inventer d’informations
+- Ne pas sortir du périmètre mobile
+- Utiliser uniquement les données fournies
+- Distinguer clairement :
+  • faits observés
+  • résultats algorithmiques (NLP / IA)
+  • interprétation forensic
+
+- Ne pas affirmer une culpabilité absolue
+- Formuler des conclusions comme :
+  "présomptions", "indices concordants", "éléments suggestifs"
 
 - Mentionner que :
-  👉 L’analyse IA est une aide et doit être validée par un analyste humain
+  → l’analyse IA constitue une aide à l’interprétation
 
 - Respecter les principes :
   - ISO/IEC 27037
-  - Intégrité des preuves
-  - Traçabilité de l’analyse
+  - intégrité des preuves
+  - traçabilité
 
 ═══════════════════════════════════════════════════════════
-STRUCTURE OBLIGATOIRE DU RAPPORT
+STRUCTURE OBLIGATOIRE
 ═══════════════════════════════════════════════════════════
 
-1. Objet de l'investigation  
-2. Périmètre analysé  
-3. Méthodologie  
-4. Analyse des messages texte  
-5. Analyse des notes vocales  
-6. Corrélation globale des résultats  
-7. Identification des éléments suspects  
-8. Analyse du niveau de risque  
-9. Limites de l’analyse  
-10. Conclusion forensic  
-11. Recommandations  
+I. RÉSUMÉ EXÉCUTIF  
+→ synthèse globale des observations
+
+II. PÉRIMÈTRE DE L’ANALYSE  
+→ ce qui a été analysé (mobile uniquement)
+
+III. MÉTHODOLOGIE  
+→ NLP, transcription audio, scoring
+
+IV. ANALYSE DES COMMUNICATIONS TEXTE  
+→ messages suspects + patterns
+
+V. ANALYSE DES NOTES VOCALES  
+→ transcription + éléments suspects
+
+VI. CORRÉLATION DES RÉSULTATS  
+→ liens entre texte et audio
+
+VII. ANALYSE DES INTENTIONS (MENS REA)  
+→ intention suspecte (langage codé, ambiguïté, dissimulation)
+
+VIII. ACTES POTENTIELS (ACTUS REUS)  
+→ actions suggérées par les échanges (transfert, coordination, etc.)
+
+IX. INDICATEURS DE DISSIMULATION  
+→ langage indirect, termes vagues, stratégies d’évitement
+
+X. ÉVALUATION DU NIVEAU DE RISQUE  
+→ faible / moyen / élevé / critique
+
+XI. LIMITES DE L’ANALYSE  
+→ rôle de l’IA + absence de preuve matérielle directe
+
+XII. CONCLUSION FORENSIQUE  
+→ conclusion prudente mais structurée
+
+XIII. RECOMMANDATIONS  
+→ poursuite d’investigation (Windows, réseau, logs…)
 
 ═══════════════════════════════════════════════════════════
-DONNÉES D'ENTRÉE
+STYLE D’ÉCRITURE
 ═══════════════════════════════════════════════════════════
 
-Voici les données issues de l’analyse :
-
-{json.dumps(payload, indent=2, ensure_ascii=False)}
-
-═══════════════════════════════════════════════════════════
-STYLE DE SORTIE
-═══════════════════════════════════════════════════════════
-
-- Rapport structuré en Markdown
-- Sections bien séparées
-- Ton professionnel
-- Utiliser des indicateurs de risque :
+- Ton professionnel, formel, analytique
+- Style proche rapport judiciaire
+- Utiliser une chronologie implicite si possible
+- Utiliser :
   🔴 Critique
   🟠 Élevé
   🟡 Moyen
   🟢 Faible
 
+- Ne pas générer de code
 - Ne pas générer de JSON
-- Générer uniquement du texte lisible (rapport final)
+- Générer uniquement un rapport structuré
 
+═══════════════════════════════════════════════════════════
+DONNÉES À ANALYSER
+═══════════════════════════════════════════════════════════
+
+{json.dumps(payload, indent=2, ensure_ascii=False)}
 """
-
-    # =========================
-    # Appel Gemini
-    # =========================
-    client = genai.Client(api_key="AIzaSyCZhbV04u5fry9XDkwfyCpEWW-SerCJGy8")
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt_rapport
-    )
-
-    texte = getattr(response, "text", None)
-    if not texte:
-        raise Exception("Réponse vide reçue depuis Gemini.")
-
-    return texte
+    return generer_contenu_gemini(prompt_rapport)
+    
 
 
 def afficher_resultats_texte(results):
@@ -1138,6 +1145,29 @@ Le système estime que le dossier présente un niveau de risque global **{niveau
 Une corrélation complémentaire avec les artefacts système, réseau, temporels
 et contextuels est recommandée pour confirmer l'interprétation.
 """)
+
+load_dotenv()
+
+def generer_contenu_gemini(prompt: str) -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise Exception(
+            "Clé API Gemini introuvable. Vérifie le fichier .env ou la variable d'environnement GEMINI_API_KEY."
+        )
+
+    client = genai.Client(api_key=api_key)
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+
+    texte = getattr(response, "text", None)
+    if not texte:
+        raise Exception("Réponse vide reçue depuis Gemini.")
+
+    return texte
 
     # =========================
     # Bouton de téléchargement
