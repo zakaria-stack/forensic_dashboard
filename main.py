@@ -1,13 +1,6 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
 
-# Kan-importiw l-fichiers dyal l-equipe kamlin
-import windows_usb_zakaria
-import pcap
-import linux
-import mobile_nlp
-import rapport_final
-
 # 1. Configuration dyal la page (DIMA hiya lowla f Streamlit)
 st.set_page_config(page_title="SOC | TechCorp Forensics", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
@@ -140,7 +133,7 @@ with st.sidebar:
     st.caption("© 2026 EST - CyberSecurity DFIR Team")
 
 # ==========================================
-# 4. L-KHEDMA DYAL L-MENU (Routage m-s7a7)
+# 4. L-KHEDMA DYAL L-MENU (Lazy Loading)
 # ==========================================
 
 if page == "Dashboard":
@@ -213,30 +206,37 @@ if page == "Dashboard":
         """, unsafe_allow_html=True)
 
 elif page == "Windows & USB":
+    # L'import se fait UNIQUEMENT si l'utilisateur clique sur cette page
+    import windows_usb_zakaria
     windows_usb_zakaria.run()
 
 elif page == "Serveur Linux & PCAP":
-    # Hna jm3na l-khedma dyal Ismail b-jouj (Linux + PCAP)
-    # Kan-fترضou bli l-fichiers linux.py w pcap.py fihom fonction smitha run()
     tab_linux, tab_pcap = st.tabs(["🐧 Analyse Serveur Linux", "📡 Analyse Trafic Réseau (PCAP)"])
     
     with tab_linux:
         try:
+            import linux
             linux.run()
-        except AttributeError:
-            st.info("⚠️ Le fichier `linux.py` est en cours de développement par Ismail (La fonction run() n'est pas encore définie).")
+        except Exception as e:
+            st.info("⚠️ Le fichier `linux.py` est en cours de développement par Ismail.")
             
     with tab_pcap:
         try:
+            import pcap
             pcap.run()
-        except AttributeError:
-            st.info("⚠️ Le fichier `pcap.py` est en cours de développement par Ismail (La fonction run() n'est pas encore définie).")
+        except Exception as e:
+            st.info("⚠️ Le fichier `pcap.py` est en cours de développement par Ismail.")
 
 elif page == "Mobile & NLP (IA)":
     try:
+        import mobile_nlp
         mobile_nlp.run()
-    except AttributeError:
+    except Exception as e:
         st.info("⚠️ Le fichier `mobile_nlp.py` est en cours de développement par Ahmed.")
 
 elif page == "Rapport Final":
-    rapport_final.run()
+    try:
+        import rapport_final
+        rapport_final.run()
+    except Exception as e:
+        st.error(f"Erreur dans la page rapport : {e}")
