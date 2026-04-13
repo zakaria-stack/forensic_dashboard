@@ -1,285 +1,851 @@
+# =============================================================================
+# MODULE PCAP — Pôle Réseau & Analyse Trafic
+# Analyste : Ismail
+# Affaire  : TechCorp #2026-TC — Suspicion d'exfiltration via FTP
+# Outils   : Scapy, Streamlit, Gemini 2.5 Flash
+# =============================================================================
+
 import streamlit as st
 import pandas as pd
+import os
+import hashlib
+import tempfile
+import time
+from datetime import datetime
+from collections import defaultdict
+from dotenv import load_dotenv
+
+from fpdf import FPDF
+import google.generativeai as genai
+
+# =============================================================================
+# GÉNÉRATION PDF (Même pattern que windows_usb_zakaria.py)
+# =============================================================================
+
+def generate_pdf_report(report_text):
+    pdf = FPDF()
+    pdf.add_page()
+
+    pdf.set_font("Arial", 'B', 15)
+    pdf.cell(0, 10, "RAPPORT D'INVESTIGATION NUMERIQUE FORENSIQUE", ln=True, align='C')
+    pdf.ln(5)
+
+    report_text = (
+        report_text
+        .replace('œ', 'oe').replace('Œ', 'OE')
+        .replace('\u2019', "'").replace('\u201c', '"').replace('\u201d', '"')
+    )
+
+    for line in report_text.split('\n'):
+        line = line.strip()
+        if not line:
+            pdf.ln(4)
+            continue
+        if line.startswith('#'):
+            clean_title = line.replace('#', '').replace('*', '').strip().upper()
+            pdf.set_font("Arial", 'B', 12)
+            safe_title = clean_title.encode('latin-1', 'ignore').decode('latin-1')
+            pdf.multi_cell(0, 8, txt=safe_title)
+            pdf.ln(2)
+        else:
+            clean_line = line.replace('**', '').replace('*', '-').replace('`', '')
+            pdf.set_font("Arial", size=11)
+            safe_line = clean_line.encode('latin-1', 'ignore').decode('latin-1')
+            pdf.multi_cell(0, 6, txt=safe_line)
+
+    return pdf.output(dest="S").encode("latin-1")
+
+
+# =============================================================================
+# PARSING PCAP AVEC SCAPY
+# =============================================================================
+
+def parse_pcap(pcap_path):
+    """
+    Parse le fichier .pcap avec Scapy.
+    Retourne un dictionnaire avec toutes les données extraites.
+    """
+    try:
+        from scapy.all import rdpcap, TCP, IP, Raw
+    except ImportError:
+        st.error("❌ Scapy n'est pas installé. Exécutez : pip install scapy")
+        return None
+
+    paquets = rdpcap(pcap_path)
+
+    total_paquets       = len(paquets)
+    ips_src             = defaultdict(int)
+    ips_dst             = defaultdict(int)
+    protocoles          = defaultdict(int)
+    sessions_ftp        = []       # Liste de dicts par session
+    connexions_timeline = []       # Liste de dicts pour la timeline
+
+    # ── Variables de suivi de session FTP ───────────────────────────────────
+    session_courante = {}          # ip_src → données de session en cours
+    # ────────────────────────────────────────────────────────────────────────
+
+    for pkt in paquets:
+        if not pkt.haslayer(IP):
+            continue
+
+        ip_src = pkt[IP].src
+        ip_dst = pkt[IP].dst
+        ips_src[ip_src] += 1
+        ips_dst[ip_dst] += 1
+
+        # Protocole de couche transport
+        if pkt.haslayer(TCP):
+            protocoles['TCP'] += 1
+        else:
+            protocoles['Autre'] += 1
+
+        # Timestamp du paquet
+        ts = float(pkt.time)
+        heure = datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+        date  = datetime.fromtimestamp(ts).strftime('%d/%m/%Y')
+
+        # ── Détection FTP (port 21 TCP) ──────────────────────────────────
+        if pkt.haslayer(TCP) and pkt.haslayer(Raw):
+            port_src = pkt[TCP].sport
+            port_dst = pkt[TCP].dport
+
+            if port_dst == 21 or port_src == 21:
+                try:
+                    payload = pkt[Raw].load.decode('utf-8', errors='ignore').strip()
+                except Exception:
+                    payload = ""
+
+                if not payload:
+                    continue
+
+                protocoles['FTP'] = protocoles.get('FTP', 0) + 1
+
+                # Clé de session : paire IP
+                cle = f"{ip_src}→{ip_dst}" if port_dst == 21 else f"{ip_dst}→{ip_src}"
+
+                if cle not in session_courante:
+                    session_courante[cle] = {
+                        'ip_client'  : ip_src if port_dst == 21 else ip_dst,
+                        'ip_serveur' : ip_dst if port_dst == 21 else ip_src,
+                        'utilisateur': None,
+                        'mot_de_passe': None,
+                        'commandes'  : [],
+                        'fichiers_recus'  : [],
+                        'fichiers_envoyes': [],
+                        'dossiers_visites': [],
+                        'debut'      : heure,
+                        'date'       : date,
+                        'score'      : 0,
+                    }
+
+                sess = session_courante[cle]
+
+                # Analyse des commandes FTP
+                payload_upper = payload.upper()
+
+                if payload_upper.startswith('USER '):
+                    nom = payload[5:].strip()
+                    sess['utilisateur'] = nom
+                    sess['commandes'].append(f"USER {nom}")
+                    sess['score'] += 1
+
+                elif payload_upper.startswith('PASS '):
+                    mdp = payload[5:].strip()
+                    sess['mot_de_passe'] = mdp
+                    sess['commandes'].append(f"PASS {mdp}")
+                    sess['score'] += 3   # Credentials en clair = critique
+
+                elif payload_upper.startswith('RETR '):
+                    fichier = payload[5:].strip()
+                    sess['fichiers_recus'].append(fichier)
+                    sess['commandes'].append(f"RETR {fichier}")
+                    sess['score'] += 5   # Téléchargement = très suspect
+
+                elif payload_upper.startswith('STOR '):
+                    fichier = payload[5:].strip()
+                    sess['fichiers_envoyes'].append(fichier)
+                    sess['commandes'].append(f"STOR {fichier}")
+                    sess['score'] += 5
+
+                elif payload_upper.startswith('CWD ') or payload_upper.startswith('CD '):
+                    dossier = payload[4:].strip()
+                    sess['dossiers_visites'].append(dossier)
+                    sess['commandes'].append(f"CWD {dossier}")
+                    sess['score'] += 1
+
+                elif payload_upper.startswith('DELE '):
+                    fichier = payload[5:].strip()
+                    sess['commandes'].append(f"DELE {fichier}")
+                    sess['score'] += 4   # Suppression = suspect
+
+                elif payload_upper.startswith('MKD ') or payload_upper.startswith('RMD '):
+                    sess['commandes'].append(payload.strip())
+                    sess['score'] += 2
+
+                elif any(payload_upper.startswith(cmd) for cmd in ('QUIT', 'BYE')):
+                    # Fin de session → on la sauvegarde
+                    sess['commandes'].append('QUIT')
+                    sess['fin'] = heure
+                    sessions_ftp.append(dict(sess))
+                    del session_courante[cle]
+
+                # Timeline
+                connexions_timeline.append({
+                    'Date'    : date,
+                    'Heure'   : heure,
+                    'Source'  : ip_src,
+                    'Dest'    : ip_dst,
+                    'Protocole': 'FTP',
+                    'Commande': payload[:60],
+                })
+
+    # Sauvegarder les sessions qui ne se sont pas terminées proprement (pas de QUIT)
+    for cle, sess in session_courante.items():
+        if sess['commandes']:
+            sess.setdefault('fin', 'N/A')
+            sessions_ftp.append(dict(sess))
+
+    # Niveau de risque par session
+    for sess in sessions_ftp:
+        s = sess['score']
+        if s >= 10:
+            sess['niveau'] = 'CRITIQUE'
+            sess['couleur'] = '🔴'
+        elif s >= 6:
+            sess['niveau'] = 'ÉLEVÉ'
+            sess['couleur'] = '🟠'
+        elif s >= 3:
+            sess['niveau'] = 'MOYEN'
+            sess['couleur'] = '🟡'
+        else:
+            sess['niveau'] = 'FAIBLE'
+            sess['couleur'] = '🟢'
+
+    return {
+        'total_paquets'      : total_paquets,
+        'ips_src'            : dict(ips_src),
+        'ips_dst'            : dict(ips_dst),
+        'protocoles'         : dict(protocoles),
+        'sessions_ftp'       : sessions_ftp,
+        'timeline'           : connexions_timeline,
+    }
+
+
+# =============================================================================
+# GÉNÉRATION RAPPORT IA (GEMINI)
+# =============================================================================
+
+def generer_rapport_pcap_ia(resultats, api_key):
+    """Génère un rapport d'investigation PCAP via Gemini 2.5 Flash."""
+
+    sessions  = resultats['sessions_ftp']
+    total_pkt = resultats['total_paquets']
+
+    nb_sessions   = len(sessions)
+    nb_critiques  = len([s for s in sessions if s['niveau'] == 'CRITIQUE'])
+    nb_fichiers   = sum(len(s['fichiers_recus']) + len(s['fichiers_envoyes']) for s in sessions)
+    credentials   = [f"{s['utilisateur']}:{s['mot_de_passe']}" for s in sessions if s['utilisateur']]
+
+    top_sessions = sorted(sessions, key=lambda x: x['score'], reverse=True)[:5]
+    payload_sessions = [
+        {
+            'ip_client'       : s['ip_client'],
+            'ip_serveur'      : s['ip_serveur'],
+            'utilisateur'     : s['utilisateur'],
+            'fichiers_recus'  : s['fichiers_recus'],
+            'fichiers_envoyes': s['fichiers_envoyes'],
+            'dossiers'        : s['dossiers_visites'],
+            'score'           : s['score'],
+            'niveau'          : s['niveau'],
+        }
+        for s in top_sessions
+    ]
+
+    prompt = f"""Agissez en tant qu'Expert Analyste DFIR (Digital Forensics and Incident Response).
+Rédigez un rapport d'investigation formel, structuré et impartial pour le dossier #2026-TC.
+Périmètre technique : Analyse du trafic réseau (PCAP) — Protocole FTP.
+Analyste désigné : Ismail.
+
+DONNÉES EXTRAITES DE LA CAPTURE RÉSEAU :
+- Total paquets analysés : {total_pkt}
+- Sessions FTP détectées : {nb_sessions}
+- Sessions de niveau CRITIQUE : {nb_critiques}
+- Fichiers transférés (RETR/STOR) : {nb_fichiers}
+- Identifiants FTP en clair détectés : {credentials}
+- Détail des sessions les plus suspectes : {payload_sessions}
+
+INSTRUCTIONS DE RÉDACTION :
+1. TON : Académique, objectif, factuel et procédural.
+2. EN-TÊTE OBLIGATOIRE :
+🏛️ DÉPARTEMENT DES INVESTIGATIONS NUMÉRIQUES (DFIR) 🏛️
+**RAPPORT D'EXPERTISE FORENSIQUE : PÔLE RÉSEAU & PCAP**
+**Date d'émission :** {datetime.now().strftime('%d %B %Y')}
+**Référence Dossier :** #2026-TC
+**Analyste Réseau :** Ismail
+
+3. STRUCTURE EXIGÉE :
+# I. RÉSUMÉ EXÉCUTIF
+# II. ANALYSE DU PROTOCOLE FTP (VULNÉRABILITÉS ET RISQUES)
+# III. SESSIONS SUSPECTES ET TRANSFERTS IDENTIFIÉS
+# IV. INDICATEURS DE COMPROMISSION (IoC)
+# V. CONCLUSION TECHNIQUE ET RECOMMANDATIONS
+
+4. FORMATAGE : Markdown standard. Pas de blocs de code (```). Pas d'indentation en début de ligne.
+"""
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    full_report  = ""
+    report_ph    = st.empty()
+    response     = model.generate_content(prompt, stream=True)
+
+    for chunk in response:
+        try:
+            full_report += chunk.text
+            report_ph.markdown(full_report + " ▌")
+        except Exception:
+            continue
+
+    return full_report
+
+
+# =============================================================================
+# FONCTION PRINCIPALE run()
+# =============================================================================
 
 def run():
+    load_dotenv()
 
-    st.title("🌐 Analyse du Trafic Réseau (PCAP)")
-    st.markdown("**Examinateur :** Boutoucha Ismail | **Outil :** Wireshark")
-    st.markdown("---")
+    locked_msg = (
+        "🔒 **Section verrouillée.** En attente d'ingestion du fichier PCAP. "
+        "Veuillez uploader `reseau.pcap` dans l'onglet **0. UPLOAD** pour débloquer l'analyse."
+    )
 
-    # ─── Bannière d'alerte principale ───
-    st.error("""
-🚨 **EXFILTRATION DE DONNÉES CONFIRMÉE** — Le 21 février 2026, Jean Martin (192.168.10.42)
-a exfiltré le fichier `projet_orion.tar.gz` (4.2 Mo) via FTP vers un serveur externe,
-suivi d'un DNS tunneling et d'une tentative d'espionnage industriel vers un concurrent direct.
-""")
+    # ── Initialisation session_state ─────────────────────────────────────────
+    if 'pcap_resultats' not in st.session_state:
+        st.session_state.pcap_resultats = None
+    if 'pcap_rapport_ia' not in st.session_state:
+        st.session_state.pcap_rapport_ia = None
 
-    # ════════════════════════════════════════════
-    # SECTION 1 — STATISTIQUES GLOBALES
-    # ════════════════════════════════════════════
-    st.subheader("📊 Statistiques globales de la capture")
-    st.caption("Fichier analysé : reseau.pcap | Cas TechCorp — Pièce A")
+    # ── En-tête ──────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div style="display:flex; align-items:center; gap:10px;">
+        <h1 style="margin:0; color:#1E3A8A;">📡 Pôle d'Analyse : Trafic Réseau (PCAP)</h1>
+    </div>
+    <p style="font-size:14px; color:gray;">
+        <b>Analyste Principal :</b> Ismail &nbsp;|&nbsp;
+        <b>Cible :</b> reseau.pcap &nbsp;|&nbsp;
+        <b>Outils :</b> Scapy, Python Data-Stack, Gemini 2.5 Flash
+    </p>
+    <hr style="margin-top:0px; margin-bottom:20px;">
+    """, unsafe_allow_html=True)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📦 Total paquets",     "5 847")
-    col2.metric("🌐 IPs uniques",       "12")
-    col3.metric("⏱️ Durée capture",     "5 heures")
-    col4.metric("💾 Taille fichier",    "2.8 Mo")
+    # ── CSS Upload zone ───────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+        [data-testid="stFileUploader"] {
+            background-color: #f0fdf4;
+            border: 2px dashed #16a34a;
+            border-radius: 15px;
+            padding: 15px;
+            transition: all 0.3s ease;
+        }
+        [data-testid="stFileUploader"]:hover {
+            background-color: #dcfce7;
+            border-color: #dc2626;
+        }
+        [data-testid="stFileUploader"] button {
+            background-color: #16a34a;
+            color: white;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("📅 Début",  "21/02/2026 14:00")
-    col6.metric("📅 Fin",    "21/02/2026 19:00")
-    col7.metric("⚠️ Paquets suspects", "22")
-    col8.metric("🔴 IOCs identifiés",  "5")
-
-    # ─── Répartition des protocoles ───
-    st.markdown("#### Répartition des protocoles")
-    protocoles_data = pd.DataFrame({
-        "Protocole": ["DNS (UDP/53)", "Autres TCP", "TCP", "ARP", "HTTPS (TCP/443)",
-                      "SSH (TCP/22)", "NTP (UDP/123)", "FTP-Data (TCP/49932)",
-                      "HTTP (TCP/80)", "ICMP", "FTP (TCP/21)", "mDNS (UDP/5353)"],
-        "Paquets":   [1720, 2805, 3420, 400, 124, 263, 150, 112, 85, 120, 48, 20],
-        "Pourcentage (%)": [29.4, 48.0, 58.5, 6.8, 2.1, 4.5, 2.6, 1.9, 1.5, 2.1, 0.8, 0.3],
-    })
-    st.dataframe(protocoles_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 2 — CONFIGURATION RÉSEAU
-    # ════════════════════════════════════════════
-    st.subheader("🖥️ Hôtes identifiés sur le réseau")
-
-    hosts_data = pd.DataFrame([
-        {"IP": "192.168.10.42",  "Nom":          "PC Jean Martin",            "MAC": "00:1a:2b:3c:4d:5e", "Rôle": "⚠️ Poste utilisateur suspect"},
-        {"IP": "192.168.10.15",  "Nom":          "srv-intern01",               "MAC": "00:1a:2b:3c:4d:10", "Rôle": "🔴 Serveur interne compromis (pivot)"},
-        {"IP": "192.168.10.1",   "Nom":          "Gateway/DNS",                "MAC": "00:1a:2b:3c:4d:01", "Rôle": "Passerelle réseau / DNS"},
-        {"IP": "192.168.10.20",  "Nom":          "Fileserver",                 "MAC": "00:1a:2b:3c:4d:20", "Rôle": "Serveur de fichiers"},
-        {"IP": "192.168.10.5",   "Nom":          "Poste Admin",                "MAC": "00:1a:2b:3c:4d:05", "Rôle": "Poste administrateur"},
-        {"IP": "203.0.113.50",   "Nom":          "ftp.securedrop-ext.com",     "MAC": "N/A",               "Rôle": "🔴 Serveur FTP externe (exfiltration)"},
-        {"IP": "198.51.100.25",  "Nom":          "novatech-industries.com",    "MAC": "N/A",               "Rôle": "🔴 Site concurrent (espionnage)"},
-        {"IP": "142.250.74.100", "Nom":          "www.google.com",             "MAC": "N/A",               "Rôle": "Moteur de recherche"},
-        {"IP": "104.26.10.50",   "Nom":          "vpn-provider.net",           "MAC": "N/A",               "Rôle": "⚠️ Fournisseur VPN (connexion bloquée)"},
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_upload, tab_synth, tab_ftp, tab_conn, tab_conclusion, tab_ia = st.tabs([
+        "📥 0. UPLOAD",
+        "📊 1. SYNTHÈSE",
+        "📂 2. SESSIONS FTP",
+        "🌐 3. CONNEXIONS",
+        "⚖️ 4. CONCLUSION",
+        "🤖 5. RAPPORT IA",
     ])
-    st.dataframe(hosts_data, use_container_width=True, hide_index=True)
+
+    # =========================================================================
+    # TAB 0 : UPLOAD
+    # =========================================================================
+    with tab_upload:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+                    padding: 30px; border-radius: 15px; text-align: center;
+                    border: 1px solid #86efac; margin-bottom: 20px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <h2 style="color: #15803d; margin-top: 0px; font-weight: 800;">
+                ☁️ Espace de Téléversement Sécurisé
+            </h2>
+            <p style="color: #14532d; font-size: 16px; margin-bottom: 0px;">
+                Glissez et déposez votre capture réseau <b>.pcap</b> ici.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pcap_file = st.file_uploader(
+            "Uploadez votre fichier ici",
+            accept_multiple_files=False,
+            type=['pcap', 'pcapng', 'cap'],
+            label_visibility="collapsed",
+            key="pcap_uploader"
+        )
+
+        if pcap_file:
+            st.success(f"📦 **Fichier détecté :** `{pcap_file.name}` ({pcap_file.size / 1024:.1f} Ko)")
+
+            # Hash d'intégrité
+            md5  = hashlib.md5(pcap_file.getvalue()).hexdigest()
+            sha1 = hashlib.sha1(pcap_file.getvalue()).hexdigest()
+
+            c1, c2 = st.columns(2)
+            c1.code(f"MD5  : {md5}")
+            c2.code(f"SHA1 : {sha1}")
+
+            if st.button("🚀 Lancer l'Analyse Forensique du PCAP",
+                         use_container_width=True, type="primary"):
+
+                with st.spinner("🔄 Parsing du PCAP en cours... Extraction des artefacts réseau..."):
+                    # Sauvegarde temporaire sur disque (Scapy a besoin d'un path)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pcap') as tmp:
+                        tmp.write(pcap_file.getvalue())
+                        tmp_path = tmp.name
+
+                    try:
+                        resultats = parse_pcap(tmp_path)
+                        if resultats:
+                            st.session_state.pcap_resultats = resultats
+                            st.success("✅ Analyse terminée ! Naviguez vers l'onglet **SYNTHÈSE**.")
+
+                            # Récapitulatif
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("📦 Paquets analysés",
+                                        f"{resultats['total_paquets']:,}")
+                            col2.metric("📂 Sessions FTP",
+                                        len(resultats['sessions_ftp']))
+                            col3.metric("🔴 Sessions CRITIQUES",
+                                        len([s for s in resultats['sessions_ftp']
+                                             if s['niveau'] == 'CRITIQUE']))
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+
+    # =========================================================================
+    # TAB 1 : SYNTHÈSE
+    # =========================================================================
+    with tab_synth:
+        res = st.session_state.pcap_resultats
+        if not res:
+            st.warning(locked_msg)
+        else:
+            sessions = res['sessions_ftp']
+
+            nb_critiques = len([s for s in sessions if s['niveau'] == 'CRITIQUE'])
+            nb_fichiers  = sum(len(s['fichiers_recus']) + len(s['fichiers_envoyes'])
+                               for s in sessions)
+            nb_creds     = len([s for s in sessions if s['utilisateur']])
+
+            # Alerte globale
+            if nb_critiques > 0:
+                st.error(
+                    f"🚨 **ALERTE CRITIQUE : EXFILTRATION FTP DÉTECTÉE** — "
+                    f"{nb_critiques} session(s) critique(s) identifiée(s) dans la capture réseau."
+                )
+
+            st.markdown("### 📊 Métriques de l'Investigation (Temps Réel)")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("📦 Total Paquets",     f"{res['total_paquets']:,}", "Analysés")
+            col2.metric("📂 Sessions FTP",       len(sessions),              "Détectées")
+            col3.metric("📁 Fichiers Transférés", nb_fichiers,               "RETR / STOR")
+            col4.metric("🔑 Credentials",         nb_creds,                  "En clair (FTP)")
+
+            st.markdown("---")
+
+            # Répartition des protocoles
+            st.markdown("### 📈 Répartition des Protocoles")
+            df_proto = pd.DataFrame(
+                list(res['protocoles'].items()),
+                columns=['Protocole', 'Paquets']
+            )
+            st.bar_chart(df_proto.set_index('Protocole'))
+
+            st.markdown("---")
+
+            # Répartition des niveaux de risque FTP
+            st.markdown("### 🎯 Niveaux de Risque des Sessions FTP")
+            niveaux = {'CRITIQUE': 0, 'ÉLEVÉ': 0, 'MOYEN': 0, 'FAIBLE': 0}
+            for s in sessions:
+                niveaux[s['niveau']] = niveaux.get(s['niveau'], 0) + 1
+
+            df_niv = pd.DataFrame(
+                list(niveaux.items()),
+                columns=['Niveau', 'Sessions']
+            )
+            st.bar_chart(df_niv.set_index('Niveau'))
+
+            # Top IPs sources
+            st.markdown("### 🌐 Top IPs Sources")
+            top_ips = sorted(res['ips_src'].items(), key=lambda x: x[1], reverse=True)[:10]
+            df_ips  = pd.DataFrame(top_ips, columns=['IP Source', 'Paquets envoyés'])
+            st.dataframe(df_ips, use_container_width=True, hide_index=True)
+
+    # =========================================================================
+    # TAB 2 : SESSIONS FTP
+    # =========================================================================
+    with tab_ftp:
+        res = st.session_state.pcap_resultats
+        if not res:
+            st.warning(locked_msg)
+        else:
+            sessions = res['sessions_ftp']
+
+            st.markdown("""
+            <style>
+                .ftp-card  { background:#f8fafc; border-left:4px solid #0284c7;
+                             padding:15px; border-radius:5px; margin-bottom:15px;
+                             border:1px solid #e2e8f0; }
+                .ftp-crit  { background:#fef2f2; border-left:4px solid #dc2626;
+                             padding:15px; border-radius:5px; margin-bottom:15px; }
+                .ftp-mono  { font-family:'Courier New',monospace;
+                             background:#1e293b; color:#e2e8f0;
+                             padding:3px 8px; border-radius:4px; font-size:0.85em; }
+            </style>
+            """, unsafe_allow_html=True)
+
+            st.markdown("### 📂 Analyse Forensique des Sessions FTP")
+            st.markdown("""
+            <div class="ftp-card">
+                <h4 style="margin-top:0; color:#0f172a;">ℹ️ Contexte Médico-Légal</h4>
+                Le protocole FTP (port 21) transmet les identifiants et les données <b>en clair</b>,
+                sans chiffrement. Toute session FTP est donc un vecteur d'exfiltration
+                et une source d'artefacts réseau directement exploitables en forensique.
+                <br><br>
+                <b>Artefact ciblé :</b>
+                <span class="ftp-mono">reseau.pcap</span> — Flux TCP port 21
+            </div>
+            """, unsafe_allow_html=True)
+
+            if not sessions:
+                st.info("ℹ️ Aucune session FTP détectée dans ce fichier PCAP.")
+            else:
+                # Filtres
+                filtre_niv = st.selectbox(
+                    "🔍 Filtrer par niveau de risque",
+                    ['Tous', 'CRITIQUE', 'ÉLEVÉ', 'MOYEN', 'FAIBLE'],
+                    key='filtre_ftp'
+                )
+                sessions_filtrees = (
+                    sessions if filtre_niv == 'Tous'
+                    else [s for s in sessions if s['niveau'] == filtre_niv]
+                )
+
+                st.markdown(f"**{len(sessions_filtrees)} session(s) affichée(s)**")
+
+                for i, sess in enumerate(sessions_filtrees, 1):
+                    couleur_border = {
+                        'CRITIQUE': '#dc2626', 'ÉLEVÉ': '#ea580c',
+                        'MOYEN'   : '#ca8a04', 'FAIBLE': '#16a34a'
+                    }.get(sess['niveau'], '#64748b')
+
+                    with st.expander(
+                        f"{sess['couleur']} Session #{i} | "
+                        f"{sess['ip_client']} → {sess['ip_serveur']} | "
+                        f"Niveau : {sess['niveau']} | Score : {sess['score']}"
+                    ):
+                        col_a, col_b = st.columns(2)
+
+                        with col_a:
+                            st.markdown("**🖥️ Informations de Session**")
+                            st.markdown(f"- **IP Client :** `{sess['ip_client']}`")
+                            st.markdown(f"- **IP Serveur :** `{sess['ip_serveur']}`")
+                            st.markdown(f"- **Date :** {sess.get('date', 'N/A')}")
+                            st.markdown(f"- **Début :** {sess.get('debut', 'N/A')} "
+                                        f"| **Fin :** {sess.get('fin', 'N/A')}")
+
+                        with col_b:
+                            st.markdown("**🔑 Credentials (En Clair)**")
+                            if sess['utilisateur']:
+                                st.error(
+                                    f"👤 USER : `{sess['utilisateur']}`\n\n"
+                                    f"🔓 PASS : `{sess['mot_de_passe'] or 'Non capturé'}`"
+                                )
+                            else:
+                                st.info("Identifiants non capturés dans cette session.")
+
+                        st.markdown("**📁 Fichiers Transférés**")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown("*Reçus (RETR) :*")
+                            if sess['fichiers_recus']:
+                                for f in sess['fichiers_recus']:
+                                    st.markdown(f"  - `{f}`")
+                            else:
+                                st.caption("Aucun")
+                        with c2:
+                            st.markdown("*Envoyés (STOR) :*")
+                            if sess['fichiers_envoyes']:
+                                for f in sess['fichiers_envoyes']:
+                                    st.markdown(f"  - `{f}`")
+                            else:
+                                st.caption("Aucun")
+
+                        if sess['dossiers_visites']:
+                            st.markdown("**📂 Dossiers Explorés (CWD)**")
+                            for d in sess['dossiers_visites']:
+                                st.markdown(f"  - `{d}`")
+
+                        st.markdown("**📋 Journal des Commandes FTP**")
+                        st.code('\n'.join(sess['commandes']), language='bash')
+
+                        # Interprétation dynamique
+                        if sess['niveau'] in ('CRITIQUE', 'ÉLEVÉ'):
+                            nb_f = (len(sess['fichiers_recus'])
+                                    + len(sess['fichiers_envoyes']))
+                            st.markdown(
+                                f"""
+                                <div style="background:#fef2f2; border-left:4px solid #dc2626;
+                                            padding:12px; border-radius:5px; margin-top:10px;
+                                            border:1px solid #fecaca;">
+                                    <b>⚖️ Interprétation Forensique</b><br>
+                                    La session FTP entre <b>{sess['ip_client']}</b> et
+                                    <b>{sess['ip_serveur']}</b> présente un score de risque de
+                                    <b>{sess['score']}</b>. Les credentials ont été transmis
+                                    en clair et <b>{nb_f} fichier(s)</b> ont été transférés.
+                                    Ce comportement constitue un indicateur fort d'exfiltration.
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+
+    # =========================================================================
+    # TAB 3 : CONNEXIONS & TIMELINE
+    # =========================================================================
+    with tab_conn:
+        res = st.session_state.pcap_resultats
+        if not res:
+            st.warning(locked_msg)
+        else:
+            st.markdown("### 🌐 Carte des Connexions Réseau")
+
+            timeline = res['timeline']
+
+            if not timeline:
+                st.info("ℹ️ Aucun échange FTP à afficher dans la timeline.")
+            else:
+                # Timeline complète
+                df_tl = pd.DataFrame(timeline)
+                st.markdown("#### ⏱️ Timeline des Échanges FTP")
+                st.dataframe(df_tl, use_container_width=True, hide_index=True)
+
+                # Top IPs destinations
+                st.markdown("#### 🎯 Top IPs Destinations")
+                top_dst = sorted(
+                    res['ips_dst'].items(), key=lambda x: x[1], reverse=True
+                )[:10]
+                df_dst = pd.DataFrame(top_dst, columns=['IP Destination', 'Paquets reçus'])
+                st.dataframe(df_dst, use_container_width=True, hide_index=True)
+
+                # Paires src → dst les plus actives
+                st.markdown("#### 🔗 Paires de Communication les Plus Actives")
+                paires = defaultdict(int)
+                for row in timeline:
+                    paires[f"{row['Source']} → {row['Dest']}"] += 1
+                top_paires = sorted(paires.items(), key=lambda x: x[1], reverse=True)[:10]
+                df_paires  = pd.DataFrame(top_paires, columns=['Paire', 'Échanges'])
+                st.bar_chart(df_paires.set_index('Paire'))
+
+    # =========================================================================
+    # TAB 4 : CONCLUSION
+    # =========================================================================
+    with tab_conclusion:
+        res = st.session_state.pcap_resultats
+        if not res:
+            st.warning(locked_msg)
+        else:
+            sessions = res['sessions_ftp']
+
+            nb_crit     = len([s for s in sessions if s['niveau'] == 'CRITIQUE'])
+            nb_fichiers = sum(len(s['fichiers_recus']) + len(s['fichiers_envoyes'])
+                              for s in sessions)
+            has_creds   = any(s['utilisateur'] for s in sessions)
+            top_s       = sorted(sessions, key=lambda x: x['score'], reverse=True)
+
+            # Verdict
+            if nb_crit >= 1 and has_creds:
+                verdict_css   = "#991b1b"
+                verdict_bg    = "#fef2f2"
+                verdict_label = "⚠️ EXFILTRATION FTP AVÉRÉE"
+                verdict_detail = (
+                    f"La capture réseau révèle <b>{nb_crit} session(s) critique(s)</b>, "
+                    f"avec transmission de credentials en clair et "
+                    f"<b>{nb_fichiers} transfert(s)</b> de fichiers documentés."
+                )
+            elif nb_fichiers > 0:
+                verdict_css    = "#92400e"
+                verdict_bg     = "#fffbeb"
+                verdict_label  = "⚠️ ACTIVITÉ FTP SUSPECTE"
+                verdict_detail = (
+                    f"{nb_fichiers} transfert(s) de fichiers détecté(s). "
+                    f"Corrélation avec les autres artefacts requise."
+                )
+            else:
+                verdict_css    = "#1e3a8a"
+                verdict_bg     = "#eff6ff"
+                verdict_label  = "ℹ️ AUCUNE ACTIVITÉ SUSPECTE MAJEURE"
+                verdict_detail = "Aucune session FTP critique détectée dans cette capture."
+
+            st.markdown(
+                f"""
+                <div style="background:{verdict_bg}; border-left:8px solid {verdict_css};
+                            padding:25px; border-radius:8px; margin-bottom:25px;
+                            box-shadow:0 4px 10px rgba(0,0,0,0.08);">
+                    <h3 style="color:{verdict_css}; margin-top:0;">{verdict_label}</h3>
+                    <p style="color:{verdict_css}; margin-bottom:0; line-height:1.6;">
+                        {verdict_detail}
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            # Chaîne de garde
+            st.markdown("### 🔐 Chaîne de Garde (Chain of Custody)")
+            md5_pcap  = "Non calculé"
+            sha1_pcap = "Non calculé"
+
+            coc_text = f"""
+╔══════════════════════════════════════════════════════════╗
+║       CHAIN OF CUSTODY — TECHCORP #2026-TC               ║
+╠══════════════════════════════════════════════════════════╣
+  Affaire        : TechCorp — Exfiltration Projet Orion
+  Pièce          : reseau.pcap
+  Analyste       : Ismail
+  Date analyse   : {datetime.now().strftime('%d/%m/%Y %H:%M')}
+  Outil          : Scapy — Python 3.x
+  Standard       : ISO/IEC 27037:2012
+╠══════════════════════════════════════════════════════════╣
+  RÉSULTATS :
+  Paquets analysés     : {res['total_paquets']:,}
+  Sessions FTP         : {len(sessions)}
+  Sessions CRITIQUES   : {nb_crit}
+  Fichiers transférés  : {nb_fichiers}
+  Credentials en clair : {"OUI" if has_creds else "NON"}
+╚══════════════════════════════════════════════════════════╝
+"""
+            st.code(coc_text, language='text')
+
+            st.download_button(
+                label="📥 Télécharger la Chain of Custody (.txt)",
+                data=coc_text,
+                file_name="chain_of_custody_pcap_2026TC.txt",
+                mime="text/plain"
+            )
+
+            # Résumé des sessions suspectes
+            if top_s:
+                st.markdown("### 🚨 Top Sessions Suspectes")
+                df_top = pd.DataFrame([{
+                    'IP Client'    : s['ip_client'],
+                    'IP Serveur'   : s['ip_serveur'],
+                    'Utilisateur'  : s['utilisateur'] or 'N/A',
+                    'Fichiers'     : len(s['fichiers_recus']) + len(s['fichiers_envoyes']),
+                    'Score'        : s['score'],
+                    'Niveau'       : f"{s['couleur']} {s['niveau']}",
+                } for s in top_s[:5]])
+                st.dataframe(df_top, use_container_width=True, hide_index=True)
+
+    # =========================================================================
+    # TAB 5 : RAPPORT IA
+    # =========================================================================
+    with tab_ia:
+        res = st.session_state.pcap_resultats
+        if not res:
+            st.warning(locked_msg)
+        else:
+            st.markdown("### 🤖 Génération du Rapport d'Expertise PCAP")
+            st.info(
+                "Ce module exploite Gemini 2.5 Flash pour rédiger un rapport d'investigation "
+                "formel, basé exclusivement sur les artefacts réseau extraits du fichier PCAP."
+            )
+
+            # Clé API
+            api_key = os.getenv("GEMINI_API_KEY")
+            if api_key:
+                st.success("🔒 Clé API chargée de manière sécurisée via l'environnement local.")
+            else:
+                st.warning("⚠️ Clé API introuvable. Veuillez l'insérer manuellement :")
+                api_key = st.text_input("🔑 Clé API Google Gemini :", type="password",
+                                        key="pcap_api_key")
+
+            if st.button("⚖️ Générer le Rapport Officiel PCAP", type="primary"):
+                if not api_key:
+                    st.error("❌ Clé API requise pour initialiser le modèle de langage.")
+                else:
+                    status_box = st.info(
+                        "🔄 Initialisation du moteur d'analyse... Transmission des artefacts..."
+                    )
+                    start_time = time.time()
+
+                    try:
+                        rapport = generer_rapport_pcap_ia(res, api_key)
+                        elapsed = round(time.time() - start_time, 2)
+
+                        if not rapport.strip():
+                            status_box.empty()
+                            st.error(
+                                "❌ Échec de la génération. "
+                                "Le filtre de sécurité de l'API a intercepté la requête."
+                            )
+                        else:
+                            clean_rapport = (
+                                rapport
+                                .replace("```text", "").replace("```markdown", "")
+                                .replace("```", "").strip()
+                            )
+                            st.session_state.pcap_rapport_ia = clean_rapport
+                            status_box.empty()
+                            st.success(f"✅ Rapport finalisé en {elapsed} secondes.")
+
+                    except Exception as e:
+                        status_box.empty()
+                        st.error(f"❌ Anomalie lors de l'appel API : {str(e)}")
+
+            # Affichage et export PDF
+            if st.session_state.pcap_rapport_ia:
+                rapport_clean = st.session_state.pcap_rapport_ia
+
+                st.markdown(
+                    f"""
+                    <div style="background:#ffffff; padding:50px; border-radius:4px;
+                                box-shadow:0 10px 30px rgba(0,0,0,0.10); margin-top:20px;
+                                border-top:15px solid #1e3a8a;
+                                font-family:'Times New Roman',serif;
+                                color:#111827; line-height:1.6;">
+                        {rapport_clean}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                pdf_bytes = generate_pdf_report(rapport_clean)
+                st.download_button(
+                    label="📥 Exporter le Rapport Officiel (Format PDF)",
+                    data=pdf_bytes,
+                    file_name="Rapport_Expertise_PCAP_2026_TC.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
 
 
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 3 — TIMELINE DES ÉVÉNEMENTS
-    # ════════════════════════════════════════════
-    st.subheader("⏱️ Timeline complète des événements suspects")
-
-    timeline_data = pd.DataFrame([
-        {"Heure": "14:00:00", "Catégorie": "ℹ️ Capture",         "Événement": "Début de la capture réseau",                     "Gravité": "Info",   "Détails": "Trafic de fond normal (ARP, ICMP, DNS, NTP)"},
-        {"Heure": "14:25:03", "Catégorie": "🔍 Reconnaissance",   "Événement": "DNS — srv-intern01.techcorp.local",               "Gravité": "Moyenne","Détails": "Jean Martin résout le nom du serveur interne (192.168.10.15)"},
-        {"Heure": "14:30:12", "Catégorie": "🔓 Accès initial",    "Événement": "Session SSH #1 vers srv-intern01",                "Gravité": "Haute",  "Détails": "Port 52847 → 22 | Durée : 22 min | Volume : ~150 Ko chiffrés"},
-        {"Heure": "14:35:28", "Catégorie": "⚠️ Résolution C2",   "Événement": "DNS — ftp.securedrop-ext.com",                   "Gravité": "Haute",  "Détails": "srv-intern01 résout le domaine d'exfiltration → 203.0.113.50"},
-        {"Heure": "14:36:02", "Catégorie": "📤 Exfiltration",     "Événement": "FTP — Authentification en clair",                "Gravité": "Haute",  "Détails": "USER: jm_drop | PASS: OrionExfil2026! — transmis sans chiffrement"},
-        {"Heure": "14:38:05", "Catégorie": "📤 Exfiltration",     "Événement": "Transfert FTP — projet_orion.tar.gz (4.2 Mo)",   "Gravité": "Haute",  "Détails": "Mode PASV | Port 55012 → 49932 | Header gzip détecté (1f 8b 08 00)"},
-        {"Heure": "14:47:58", "Catégorie": "📤 Exfiltration",     "Événement": "Transfert FTP terminé",                          "Gravité": "Haute",  "Détails": "226 Transfer complete — 4 398 041 octets exfiltrés avec succès"},
-        {"Heure": "14:52:45", "Catégorie": "🔒 Session",          "Événement": "Fin Session SSH #1",                             "Gravité": "Haute",  "Détails": "TCP FIN/ACK | 22 min 33 sec de session"},
-        {"Heure": "17:58:12", "Catégorie": "🌐 Navigation",       "Événement": "DNS + HTTPS — www.google.com",                   "Gravité": "Basse",  "Détails": "Recherches Google (contenu chiffré, probablement lié à la fuite)"},
-        {"Heure": "18:05:12", "Catégorie": "🚨 DNS Tunneling",    "Événement": "3 requêtes DNS TXT encodées Base64",             "Gravité": "Haute",  "Détails": "Décodage : 'Projet_Orion', 'Budget_2026', 'Plans_Confid'"},
-        {"Heure": "18:08:22", "Catégorie": "🛡️ Évasion",         "Événement": "Tentative VPN bloquée — vpn-provider.net",       "Gravité": "Haute",  "Détails": "SYN TCP/443 → RST/ACK par le firewall"},
-        {"Heure": "18:15:03", "Catégorie": "🕵️ Espionnage",      "Événement": "DNS + HTTPS — novatech-industries.com",          "Gravité": "Haute",  "Détails": "Concurrent direct de TechCorp | SNI: novatech-industries.com"},
-        {"Heure": "18:20:05", "Catégorie": "🧹 Anti-forensique",  "Événement": "Session SSH #2 — Nettoyage de traces",           "Gravité": "Haute",  "Détails": "Port 53102 → 22 | 8 min 28 sec | ~45 Ko | Suppression probable de logs"},
-        {"Heure": "19:00:00", "Catégorie": "ℹ️ Capture",         "Événement": "Fin de la capture réseau",                       "Gravité": "Info",   "Détails": "Aucune activité suspecte après 18:28:33"},
-    ])
-    st.dataframe(timeline_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 4 — EXFILTRATION FTP
-    # ════════════════════════════════════════════
-    st.subheader("📤 Exfiltration FTP — Détails")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.error("🔑 **Identifiants FTP interceptés en clair**")
-        st.code("USER: jm_drop\nPASS: OrionExfil2026!", language="text")
-        st.caption("Les initiales 'jm' correspondent à Jean Martin. 'OrionExfil' contient le nom du projet et le mot 'Exfil'.")
-
-    with col_b:
-        st.error("💾 **Fichier exfiltré**")
-        st.code("Fichier : projet_orion.tar.gz\nTaille  : 4 398 041 octets (4.2 Mo)\nFormat  : gzip (magic bytes: 1f 8b 08 00)\nDest.   : ftp.securedrop-ext.com (203.0.113.50)\nDurée   : 14:38:05 → 14:47:58 (≈ 10 min)", language="text")
-
-    # Dialogue FTP complet
-    with st.expander("📋 Voir le dialogue FTP complet intercepté"):
-        ftp_dialog = pd.DataFrame([
-            {"Direction": "← Serveur", "Commande/Réponse": "220 SecureDrop FTP Server Ready",                       "Heure": "14:36:02.003"},
-            {"Direction": "→ Client",  "Commande/Réponse": "USER jm_drop",                                          "Heure": "14:36:02.005"},
-            {"Direction": "← Serveur", "Commande/Réponse": "331 Password required for jm_drop",                    "Heure": "14:36:02.007"},
-            {"Direction": "→ Client",  "Commande/Réponse": "PASS OrionExfil2026!",                                  "Heure": "14:36:02.009"},
-            {"Direction": "← Serveur", "Commande/Réponse": "230 User jm_drop logged in",                           "Heure": "14:36:02.011"},
-            {"Direction": "→ Client",  "Commande/Réponse": "CWD /drop",                                             "Heure": "14:36:02.013"},
-            {"Direction": "← Serveur", "Commande/Réponse": "250 CWD command successful",                            "Heure": "14:36:02.015"},
-            {"Direction": "→ Client",  "Commande/Réponse": "TYPE I",                                                "Heure": "14:36:02.017"},
-            {"Direction": "← Serveur", "Commande/Réponse": "200 Type set to I",                                     "Heure": "14:36:02.019"},
-            {"Direction": "→ Client",  "Commande/Réponse": "PASV",                                                  "Heure": "14:36:02.021"},
-            {"Direction": "← Serveur", "Commande/Réponse": "227 Entering Passive Mode (203,0,113,50,195,12)",       "Heure": "14:36:02.023"},
-            {"Direction": "→ Client",  "Commande/Réponse": "STOR projet_orion.tar.gz",                              "Heure": "14:36:02.025"},
-            {"Direction": "← Serveur", "Commande/Réponse": "150 Opening BINARY mode data connection",               "Heure": "14:36:02.027"},
-            {"Direction": "← Serveur", "Commande/Réponse": "226 Transfer complete (4398041 bytes)",                 "Heure": "14:47:59.000"},
-            {"Direction": "→ Client",  "Commande/Réponse": "QUIT",                                                  "Heure": "14:47:59.002"},
-            {"Direction": "← Serveur", "Commande/Réponse": "221 Goodbye",                                           "Heure": "14:47:59.004"},
-        ])
-        st.dataframe(ftp_dialog, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 5 — SESSIONS TCP PERSISTANTES
-    # ════════════════════════════════════════════
-    st.subheader("🔗 Sessions TCP persistantes (> 5 minutes)")
-
-    sessions_data = pd.DataFrame([
-        {"ID": "SSH-1",    "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Port Src": 52847, "Port Dst": 22,    "Protocole": "SSH",      "Début": "14:30:12", "Fin": "14:52:45", "Durée (min)": 22.55, "Volume": "~150 Ko", "Gravité": "🔴 Haute", "Description": "Exécution de scripts sur srv-intern01"},
-        {"ID": "FTP-CTRL", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50", "Port Src": 43218, "Port Dst": 21,    "Protocole": "FTP",      "Début": "14:36:02", "Fin": "14:48:15", "Durée (min)": 12.22, "Volume": "~4.5 Ko", "Gravité": "🔴 Haute", "Description": "Canal de contrôle FTP — identifiants en clair"},
-        {"ID": "FTP-DATA", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50", "Port Src": 55012, "Port Dst": 49932, "Protocole": "FTP-Data", "Début": "14:38:05", "Fin": "14:47:58", "Durée (min)": 9.88,  "Volume": "4.2 Mo",  "Gravité": "🔴 Haute", "Description": "Transfert projet_orion.tar.gz (mode PASV)"},
-        {"ID": "SSH-2",    "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Port Src": 53102, "Port Dst": 22,    "Protocole": "SSH",      "Début": "18:20:05", "Fin": "18:28:33", "Durée (min)": 8.47,  "Volume": "~45 Ko",  "Gravité": "🔴 Haute", "Description": "Nettoyage post-exfiltration (suppression de logs)"},
-    ])
-    st.dataframe(sessions_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 6 — DNS TUNNELING
-    # ════════════════════════════════════════════
-    st.subheader("🚨 DNS Tunneling — Exfiltration de métadonnées")
-
-    st.warning("Trois requêtes DNS de type TXT ont été émises vers `*.tun.securedrop-ext.com` avec des sous-domaines encodés en Base64. Cette technique permet d'exfiltrer des données en les dissimulant dans des requêtes DNS apparemment légitimes.")
-
-    dns_tunnel = pd.DataFrame([
-        {"Heure": "18:05:12", "Sous-domaine encodé (Base64)": "UHJvamV0X09yaW9u",  "Décodé": "Projet_Orion",  "Type": "TXT", "Réponse": "NXDOMAIN", "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:14", "Sous-domaine encodé (Base64)": "QnVkZ2V0XzIwMjY=",  "Décodé": "Budget_2026",   "Type": "TXT", "Réponse": "NXDOMAIN", "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:15", "Sous-domaine encodé (Base64)": "UGxhbnNfQ29uZmlk", "Décodé": "Plans_Confid",  "Type": "TXT", "Réponse": "NXDOMAIN", "Gravité": "🔴 Haute"},
-    ])
-    st.dataframe(dns_tunnel, use_container_width=True, hide_index=True)
-    st.caption("Les noms décodés confirment que les données sensibles du projet Orion, les budgets 2026 et des plans confidentiels ont été exfiltrés via DNS.")
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 7 — REQUÊTES DNS SUSPECTES
-    # ════════════════════════════════════════════
-    st.subheader("🌐 Requêtes DNS suspectes")
-
-    dns_data = pd.DataFrame([
-        {"Heure": "14:25:03", "IP Source": "192.168.10.42", "Domaine": "srv-intern01.techcorp.local",           "Type": "A",   "Résolu vers": "192.168.10.15", "Catégorie": "Reconnaissance",       "Gravité": "🟡 Moyenne"},
-        {"Heure": "14:35:28", "IP Source": "192.168.10.15", "Domaine": "ftp.securedrop-ext.com",               "Type": "A",   "Résolu vers": "203.0.113.50",  "Catégorie": "Exfiltration C2",      "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:12", "IP Source": "192.168.10.42", "Domaine": "UHJvamV0X09yaW9u.tun.securedrop-ext.com","Type": "TXT", "Résolu vers": "NXDOMAIN",      "Catégorie": "DNS Tunneling",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:14", "IP Source": "192.168.10.42", "Domaine": "QnVkZ2V0XzIwMjY=.tun.securedrop-ext.com","Type": "TXT", "Résolu vers": "NXDOMAIN",      "Catégorie": "DNS Tunneling",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:15", "IP Source": "192.168.10.42", "Domaine": "UGxhbnNfQ29uZmlk.tun.securedrop-ext.com","Type": "TXT", "Résolu vers": "NXDOMAIN",      "Catégorie": "DNS Tunneling",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:08:22", "IP Source": "192.168.10.42", "Domaine": "vpn-provider.net",                     "Type": "A",   "Résolu vers": "104.26.10.50",  "Catégorie": "Évasion / VPN",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:15:03", "IP Source": "192.168.10.42", "Domaine": "novatech-industries.com",              "Type": "A",   "Résolu vers": "198.51.100.25", "Catégorie": "Espionnage industriel","Gravité": "🔴 Haute"},
-        {"Heure": "17:58:12", "IP Source": "192.168.10.42", "Domaine": "www.google.com",                       "Type": "A",   "Résolu vers": "142.250.74.100","Catégorie": "Navigation",           "Gravité": "🟢 Basse"},
-    ])
-    st.dataframe(dns_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 8 — IOCs
-    # ════════════════════════════════════════════
-    st.subheader("🎯 IOC — Indicateurs de Compromission")
-
-    ioc_data = pd.DataFrame([
-        {"IP": "192.168.10.42", "Nom hôte": "PC Jean Martin",         "Type de menace": "Insider Threat — Acteur principal",    "Premier vu": "14:25:03", "Dernier vu": "18:28:33", "Gravité": "🔴 Haute", "Preuves": "Sessions SSH, DNS tunneling, navigation NovaTech, tentative VPN"},
-        {"IP": "203.0.113.50",  "Nom hôte": "ftp.securedrop-ext.com", "Type de menace": "Serveur d'exfiltration (C2)",          "Premier vu": "14:35:28", "Dernier vu": "14:48:15", "Gravité": "🔴 Haute", "Preuves": "Résolution DNS + transfert FTP de 4.2 Mo (projet_orion.tar.gz)"},
-        {"IP": "192.168.10.15", "Nom hôte": "srv-intern01",           "Type de menace": "Serveur compromis (pivot)",            "Premier vu": "14:30:12", "Dernier vu": "18:28:33", "Gravité": "🔴 Haute", "Preuves": "Cible des sessions SSH, utilisé comme relais FTP"},
-        {"IP": "198.51.100.25", "Nom hôte": "novatech-industries.com","Type de menace": "Destination suspecte — Concurrent",    "Premier vu": "18:15:03", "Dernier vu": "18:15:45", "Gravité": "🔴 Haute", "Preuves": "Requête DNS + session HTTPS (SNI: novatech-industries.com)"},
-        {"IP": "104.26.10.50",  "Nom hôte": "vpn-provider.net",       "Type de menace": "Tentative d'évasion réseau",           "Premier vu": "18:08:22", "Dernier vu": "18:08:55", "Gravité": "🔴 Haute", "Preuves": "DNS resolve + SYN TCP/443 → RST/ACK (firewall block)"},
-    ])
-    st.dataframe(ioc_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 9 — PAQUETS SUSPECTS
-    # ════════════════════════════════════════════
-    st.subheader("📦 Tableau des paquets suspects")
-
-    packets_data = pd.DataFrame([
-        {"Heure": "14:25:03.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS",      "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 78,   "Raison": "Résolution srv-intern01 — reconnaissance",              "Gravité": "🟡 Moyenne"},
-        {"Heure": "14:30:12.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Protocole": "TCP SYN",  "Port Src": 52847,       "Port Dst": 22,    "Taille": 62,   "Raison": "Début session SSH #1",                                  "Gravité": "🔴 Haute"},
-        {"Heure": "14:30:12.002", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Protocole": "SSH",      "Port Src": 52847,       "Port Dst": 22,    "Taille": 95,   "Raison": "SSH banner: OpenSSH_for_Windows_8.6",                   "Gravité": "🔴 Haute"},
-        {"Heure": "14:35:28.000", "IP Source": "192.168.10.15", "IP Dest": "192.168.10.1",  "Protocole": "DNS",      "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 82,   "Raison": "Résolution ftp.securedrop-ext.com — C2",                "Gravité": "🔴 Haute"},
-        {"Heure": "14:36:02.000", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "TCP SYN",  "Port Src": 43218,       "Port Dst": 21,    "Taille": 62,   "Raison": "Connexion FTP vers serveur externe",                    "Gravité": "🔴 Haute"},
-        {"Heure": "14:36:02.005", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "FTP",      "Port Src": 43218,       "Port Dst": 21,    "Taille": 76,   "Raison": "USER jm_drop (identifiant en clair)",                   "Gravité": "🔴 Haute"},
-        {"Heure": "14:36:02.009", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "FTP",      "Port Src": 43218,       "Port Dst": 21,    "Taille": 82,   "Raison": "PASS OrionExfil2026! (mot de passe en clair)",          "Gravité": "🔴 Haute"},
-        {"Heure": "14:36:02.025", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "FTP",      "Port Src": 43218,       "Port Dst": 21,    "Taille": 88,   "Raison": "STOR projet_orion.tar.gz (envoi fichier)",              "Gravité": "🔴 Haute"},
-        {"Heure": "14:38:05.000", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "FTP-Data", "Port Src": 55012,       "Port Dst": 49932, "Taille": 1514, "Raison": "Début transfert — header gzip (1f 8b 08 00)",           "Gravité": "🔴 Haute"},
-        {"Heure": "14:47:58.000", "IP Source": "192.168.10.15", "IP Dest": "203.0.113.50",  "Protocole": "FTP-Data", "Port Src": 55012,       "Port Dst": 49932, "Taille": 1460, "Raison": "Dernier segment — 4 398 041 octets transférés",         "Gravité": "🔴 Haute"},
-        {"Heure": "14:47:59.000", "IP Source": "203.0.113.50",  "IP Dest": "192.168.10.15", "Protocole": "FTP",      "Port Src": 21,          "Port Dst": 43218, "Taille": 96,   "Raison": "226 Transfer complete (4398041 bytes)",                 "Gravité": "🔴 Haute"},
-        {"Heure": "14:52:45.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Protocole": "TCP FIN",  "Port Src": 52847,       "Port Dst": 22,    "Taille": 54,   "Raison": "Fin session SSH #1 (22 min 33 sec)",                    "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:12.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS TXT",  "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 98,   "Raison": "DNS Tunnel: UHJvamV0X09yaW9u → 'Projet_Orion'",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:14.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS TXT",  "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 98,   "Raison": "DNS Tunnel: QnVkZ2V0XzIwMjY= → 'Budget_2026'",         "Gravité": "🔴 Haute"},
-        {"Heure": "18:05:15.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS TXT",  "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 98,   "Raison": "DNS Tunnel: UGxhbnNfQ29uZmlk → 'Plans_Confid'",        "Gravité": "🔴 Haute"},
-        {"Heure": "18:08:22.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS",      "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 76,   "Raison": "Résolution vpn-provider.net — tentative évasion",       "Gravité": "🔴 Haute"},
-        {"Heure": "18:08:55.000", "IP Source": "192.168.10.42", "IP Dest": "104.26.10.50",  "Protocole": "TCP SYN",  "Port Src": 54800,       "Port Dst": 443,   "Taille": 62,   "Raison": "SYN vers VPN — connexion bloquée",                     "Gravité": "🔴 Haute"},
-        {"Heure": "18:08:55.500", "IP Source": "104.26.10.50",  "IP Dest": "192.168.10.42", "Protocole": "TCP RST",  "Port Src": 443,         "Port Dst": 54800, "Taille": 54,   "Raison": "RST/ACK firewall — VPN bloqué",                        "Gravité": "🔴 Haute"},
-        {"Heure": "18:15:03.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.1",  "Protocole": "DNS",      "Port Src": "ephemeral", "Port Dst": 53,    "Taille": 82,   "Raison": "Résolution novatech-industries.com — concurrent",       "Gravité": "🔴 Haute"},
-        {"Heure": "18:15:45.000", "IP Source": "192.168.10.42", "IP Dest": "198.51.100.25", "Protocole": "TLS",      "Port Src": 55100,       "Port Dst": 443,   "Taille": 280,  "Raison": "TLS ClientHello SNI: novatech-industries.com",          "Gravité": "🔴 Haute"},
-        {"Heure": "18:20:05.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Protocole": "TCP SYN",  "Port Src": 53102,       "Port Dst": 22,    "Taille": 62,   "Raison": "Début session SSH #2 — nettoyage",                     "Gravité": "🔴 Haute"},
-        {"Heure": "18:28:33.000", "IP Source": "192.168.10.42", "IP Dest": "192.168.10.15", "Protocole": "TCP FIN",  "Port Src": 53102,       "Port Dst": 22,    "Taille": 54,   "Raison": "Fin session SSH #2 (8 min 28 sec)",                    "Gravité": "🔴 Haute"},
-    ])
-    st.dataframe(packets_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 10 — FILTRES WIRESHARK
-    # ════════════════════════════════════════════
-    st.subheader("🔎 Filtres Wireshark recommandés")
-
-    filters_data = pd.DataFrame([
-        {"Nom":              "SSH Session #1",    "Filtre Wireshark": 'ip.addr == 192.168.10.42 && tcp.port == 52847'},
-        {"Nom":              "SSH Session #2",    "Filtre Wireshark": 'ip.addr == 192.168.10.42 && tcp.port == 53102'},
-        {"Nom":              "FTP Contrôle",      "Filtre Wireshark": 'ftp && ip.addr == 203.0.113.50'},
-        {"Nom":              "FTP Données",       "Filtre Wireshark": 'ip.addr == 203.0.113.50 && tcp.port == 49932'},
-        {"Nom":              "DNS Suspects",      "Filtre Wireshark": 'dns && (dns.qry.name contains "securedrop" || dns.qry.name contains "novatech" || dns.qry.name contains "vpn")'},
-        {"Nom":              "DNS Tunneling",     "Filtre Wireshark": 'dns.qry.name contains "tun.securedrop"'},
-        {"Nom":              "TLS NovaTech",      "Filtre Wireshark": 'tls.handshake.extensions_server_name contains "novatech"'},
-        {"Nom":              "Tout le PC suspect","Filtre Wireshark": 'ip.addr == 192.168.10.42'},
-        {"Nom":              "Tout le serveur",   "Filtre Wireshark": 'ip.addr == 192.168.10.15'},
-    ])
-    st.dataframe(filters_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ════════════════════════════════════════════
-    # SECTION 11 — CONCLUSION NARRATIVE
-    # ════════════════════════════════════════════
-    st.subheader("📝 Rapport de conclusion forensique")
-
-    st.error("""
-**RAPPORT D'ANALYSE FORENSIQUE — PIÈCE À CONVICTION « A » (reseau.pcap)**
-
-Le 21 février 2026, entre 14h00 et 19h00 CET, l'analyse de la capture réseau révèle une séquence d'actions malveillantes orchestrées depuis le poste de **Jean Martin (192.168.10.42)**.
-
-**CHRONOLOGIE DES FAITS :**
-
-• À **14h25**, l'acteur résout le nom du serveur interne `srv-intern01.techcorp.local` (phase de reconnaissance).
-
-• À **14h30**, il ouvre une première session **SSH** vers srv-intern01 (192.168.10.15), d'une durée de 22 minutes, durant laquelle environ 150 Ko de données chiffrées sont échangées — compatible avec l'exécution de scripts de collecte de données.
-
-• À **14h35**, depuis le serveur compromis, une requête DNS résout `ftp.securedrop-ext.com` vers 203.0.113.50 — un domaine externe non référencé dans l'infrastructure TechCorp.
-
-• À **14h36**, une connexion **FTP** est établie depuis srv-intern01 vers ce serveur externe. Les identifiants sont transmis **en clair** : `USER jm_drop / PASS OrionExfil2026!`. Les initiales « jm » correspondent à Jean Martin. Le mot de passe contient le nom du projet ciblé (« Orion ») et le terme « Exfil ».
-
-• Entre **14h38 et 14h48**, le fichier `projet_orion.tar.gz` (4 398 041 octets) est transféré via FTP en mode passif. Le transfert est confirmé par le serveur (226 Transfer complete).
-
-• À **18h05**, trois requêtes **DNS de type TXT** sont émises vers `*.tun.securedrop-ext.com` avec des sous-domaines encodés en Base64. Le décodage révèle : « Projet_Orion », « Budget_2026 », « Plans_Confid » — technique classique de **DNS tunneling**.
-
-• À **18h08**, une tentative de connexion **VPN** (vpn-provider.net) est bloquée par le firewall (RST/ACK).
-
-• À **18h15**, une session HTTPS est établie vers `novatech-industries.com` (198.51.100.25), un **concurrent direct de TechCorp** — possible livraison d'informations ou espionnage industriel.
-
-• À **18h20**, une seconde session SSH (~45 Ko, 8 min 28 sec) est ouverte vers srv-intern01 — pattern compatible avec une opération de **nettoyage** (suppression de logs, effacement de traces).
-
-**CONCLUSION :**
-L'ensemble des artefacts réseau constitue un faisceau de preuves convergent vers une **exfiltration de données industrielles par un acteur interne identifié comme Jean Martin**. Les techniques utilisées (SSH pour l'accès, FTP pour l'exfiltration, DNS tunneling pour les métadonnées, et nettoyage post-opératoire) démontrent une action **préméditée et méthodique**.
-""")
+# =============================================================================
+if __name__ == "__main__":
+    run()
