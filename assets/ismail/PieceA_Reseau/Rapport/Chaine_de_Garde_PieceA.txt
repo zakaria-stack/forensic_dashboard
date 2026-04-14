@@ -1,0 +1,40 @@
+﻿================================================================
+       FORMULAIRE DE CHAÎNE DE GARDE (CHAIN OF CUSTODY)
+             Affaire : TechCorp - Fuite de données
+================================================================
+
+PIÈCE À CONVICTION : A - reseau.pcap
+-----------------------------------------
+Numéro de pièce     : PIECE-A-001
+Description          : Capture du trafic réseau (paquets) prise 
+                       sur le segment réseau du poste de l'employé
+                       suspect durant la période d'intérêt.
+Type de fichier      : PCAP (Packet Capture)
+Taille               : 0.51 Mo
+
+EMPREINTES NUMÉRIQUES (fichier original) :
+  MD5    : 47CF92C67E219D565717A87494F5765A
+  SHA256 : 365C6144EA7F51EE63ED85E71684AB79E6B96CCB096FCB2D8CA5EA5C85BB0F23
+
+HISTORIQUE DE MANIPULATION :
+--------------------------------------------------------------
+Date/Heure           | Action               | Opérateur
+--------------------------------------------------------------
+2026-03-30 08:51 | Réception du fichier | [Votre Nom]
+2026-03-30 08:51 | Calcul des hash      | [Votre Nom]
+2026-03-30 08:51 | Création copie trav. | [Votre Nom]
+2026-03-30 08:51 | Vérification intég.  | [Votre Nom]
+2026-03-30 08:51 | Protection lecture s. | [Votre Nom]
+--------------------------------------------------------------
+
+STOCKAGE :
+  Original     : C:\Forensic\Affaire_TechCorp\PieceA_Reseau\Originaux\
+  Copie travail: C:\Forensic\Affaire_TechCorp\PieceA_Reseau\Copies_Travail\
+
+NOTES :
+  - Le fichier original est en mode lecture seule.
+  - Toutes les analyses seront effectuées sur la copie de travail.
+  - L'intégrité a été vérifiée : hash identiques.
+
+Signature de l'enquêteur : ________________________
+================================================================

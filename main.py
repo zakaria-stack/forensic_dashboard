@@ -1,33 +1,37 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
 
-# 1. Configuration dyal la page (DIMA hiya lowla f Streamlit)
-st.set_page_config(page_title="SOC | TechCorp Forensics", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
+# 1. Configuration de la page (Toujours en premier dans Streamlit)
+st.set_page_config(page_title="C.I.A.F. - Investigation", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
-# 2. CUSTOM CSS (Design Light Mode Officiel)
+# 2. CUSTOM CSS (Design Light Mode Officiel & Professionnel)
 st.markdown("""
 <style>
-    /* Titre Principal b style Light Corporate */
+    /* Titre Principal de la plateforme */
     .cyber-title {
-        font-size: 2.8rem;
+        font-size: 3.2rem;
         color: #0F172A;
         font-weight: 900;
-        letter-spacing: 1.5px;
+        letter-spacing: 2px;
         text-transform: uppercase;
         margin-bottom: 0px;
-        border-bottom: 3px solid #1E3A8A;
+        border-bottom: 4px solid #1E3A8A;
         padding-bottom: 10px;
     }
     
-    /* Sous-titre */
+    /* Sous-titre façon terminal */
     .cyber-subtitle {
         color: #475569;
-        font-size: 1.1rem;
-        margin-top: 10px;
-        font-family: monospace;
+        font-size: 1.15rem;
+        margin-top: 15px;
+        font-family: 'Courier New', Courier, monospace;
+        background-color: #F8FAFC;
+        padding: 10px;
+        border-left: 4px solid #3B82F6;
+        border-radius: 4px;
     }
 
-    /* Boîte de Verdict (Alerte Rouge Nqiya) */
+    /* Boîte de Verdict (Alerte Rouge) */
     .verdict-box {
         background-color: #FEF2F2;
         color: #991B1B;
@@ -43,14 +47,13 @@ st.markdown("""
         animation: pulse 2s infinite;
     }
 
-    /* Animation l-Verdict (kay-clignoter b chwiya) */
     @keyframes pulse {
         0% { box-shadow: 0 0 10px rgba(220, 38, 38, 0.1); }
         50% { box-shadow: 0 0 20px rgba(220, 38, 38, 0.3); }
         100% { box-shadow: 0 0 10px rgba(220, 38, 38, 0.1); }
     }
 
-    /* Cartes des pôles d'analyse (Clean White) */
+    /* Cartes des pôles d'analyse */
     .info-card {
         background-color: #FFFFFF;
         padding: 20px;
@@ -59,9 +62,9 @@ st.markdown("""
         border-top: 4px solid #1E3A8A;
         box-shadow: 0px 4px 10px rgba(0,0,0,0.05);
         transition: transform 0.3s ease, box-shadow 0.3s ease;
+        height: 100%;
     }
     
-    /* Effet Hover (kayt-hzzou) */
     .info-card:hover {
         transform: translateY(-5px);
         box-shadow: 0px 8px 20px rgba(30, 58, 138, 0.15);
@@ -84,7 +87,7 @@ st.markdown("""
         font-size: 0.95rem;
     }
 
-    /* Styling dyal les KPIs (Metrics) */
+    /* Styling des KPIs (Metrics) */
     div[data-testid="metric-container"] {
         background-color: #FFFFFF;
         border: 1px solid #E2E8F0;
@@ -96,28 +99,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 3. L-MENU F JJENB (SIDEBAR) - DESIGN PRO
+# 3. MENU LATÉRAL (SIDEBAR) - MISE EN VALEUR DE C.I.A.F.
 with st.sidebar:
-    # st.image("assets/est_logo.png", width=80) 
-    
-    st.markdown("### 🔍 **AUDIT FORENSIQUE**")
-    st.caption("Plateforme d'Investigation Numérique")
+    st.markdown("### 🛡️ **Plateforme C.I.A.F.**")
+    st.caption("**C**onsole **I**nteractive d'**A**nalyse **F**orensique")
     
     st.markdown("""
     ---
     **📋 Fiche de l'Enquête :**
-    * **Entreprise :** TechCorp
+    * **Affaire :** TechCorp
     * **Projet compromis :** *Orion*
     * **Date d'acquisition :** 21 Fév 2026
     ---
     """)
     
-    st.success("✅ **Environnement Sécurisé**")
+    st.success("✅ **Environnement Isolé & Sécurisé**")
     st.divider()
     
-    # ======== L-MENU ========
+    # ======== NAVIGATION ========
     page = option_menu(
-        menu_title="TERMINAL",
+        menu_title="MENU C.I.A.F.",
         options=["Dashboard", "Windows & USB", "Serveur Linux & PCAP", "Mobile & NLP (IA)", "Rapport Final"], 
         icons=["cpu", "windows", "terminal", "phone", "journal-check"],
         menu_icon="shield-lock",
@@ -130,16 +131,22 @@ with st.sidebar:
         }
     )
     st.divider()
-    st.caption("© 2026 EST - CyberSecurity DFIR Team")
+    st.caption("© 2026 EST - C.I.A.F. DFIR Team")
 
 # ==========================================
-# 4. L-KHEDMA DYAL L-MENU (Lazy Loading)
+# 4. GESTION DES PAGES (ROUTING)
 # ==========================================
 
 if page == "Dashboard":
-    # En-tête
-    st.markdown('<div class="cyber-title">SYSTEME D\'INVESTIGATION NUMERIQUE</div>', unsafe_allow_html=True)
-    st.markdown('<div class="cyber-subtitle">>> Initialisation du tableau de bord des preuves... Terminé.<br>>> Cible : Infrastructure TechCorp.</div>', unsafe_allow_html=True)
+    # En-tête avec le nom officiel
+    st.markdown('<div class="cyber-title">C.I.A.F. - TABLEAU DE BORD</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="cyber-subtitle">
+        >> Initialisation de la Console Interactive d'Analyse Forensique (C.I.A.F.)... Terminé.<br>
+        >> Synchronisation des pôles d'investigation... OK.<br>
+        >> Cible en cours d'analyse : Infrastructure TechCorp (Affaire Orion).
+    </div>
+    """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
     # L-KPIs (Metrics)
@@ -160,7 +167,7 @@ if page == "Dashboard":
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     # Répartition des tâches
-    st.markdown("### 🛡️ UNITÉS D'INTERVENTION (DFIR)")
+    st.markdown("### 🏛️ UNITÉS D'INTERVENTION C.I.A.F.")
     c1, c2, c3 = st.columns(3)
     
     with c1:
@@ -206,7 +213,6 @@ if page == "Dashboard":
         """, unsafe_allow_html=True)
 
 elif page == "Windows & USB":
-    # L'import se fait UNIQUEMENT si l'utilisateur clique sur cette page
     import windows_usb_zakaria
     windows_usb_zakaria.run()
 
@@ -218,25 +224,25 @@ elif page == "Serveur Linux & PCAP":
             import linux
             linux.run()
         except Exception as e:
-            st.info("⚠️ Le fichier `linux.py` est en cours de développement par Ismail.")
+            st.info("⚠️ Le module Linux de la plateforme C.I.A.F. est en cours de développement par Ismail.")
             
     with tab_pcap:
         try:
             import pcap
             pcap.run()
         except Exception as e:
-            st.info("⚠️ Le fichier `pcap.py` est en cours de développement par Ismail.")
+            st.info("⚠️ Le module PCAP de la plateforme C.I.A.F. est en cours de développement par Ismail.")
 
 elif page == "Mobile & NLP (IA)":
     try:
         import mobile_nlp
         mobile_nlp.run()
     except Exception as e:
-        st.info("⚠️ Le fichier `mobile_nlp.py` est en cours de développement par Ahmed.")
+        st.info("⚠️ Le module Mobile de la plateforme C.I.A.F. est en cours de développement par Ahmed.")
 
 elif page == "Rapport Final":
     try:
         import rapport_final
         rapport_final.run()
     except Exception as e:
-        st.error(f"Erreur dans la page rapport : {e}")
+        st.error(f"Erreur dans le module de génération de rapport C.I.A.F. : {e}")

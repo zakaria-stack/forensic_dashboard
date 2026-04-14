@@ -625,6 +625,8 @@ def run():
                 st.caption("⚖️ *Attestation de l'analyste : Les empreintes cryptographiques calculées correspondent strictement aux journaux d'acquisition initiaux.*")
             else:
                 st.warning("⚠️ Les journaux d'empreinte FTK (.txt) n'ont pas été chargés. La vérification de la chaîne de garde (Chain of Custody) ne peut être établie.")
+
+
 # ==========================================
     # TAB 7 : GENERATEUR DE RAPPORT IA (GEMINI) - STYLE ACADÉMIQUE / DFIR
     # ==========================================
@@ -652,8 +654,9 @@ def run():
                 if not api_key:
                     st.error("❌ Échec : Une clé API valide est requise pour initialiser le modèle de langage.")
                 else:
-                    # Indicateur de statut professionnel
-                    status_box = st.info("🔄 Initialisation du moteur d'analyse sémantique et transmission des artefacts... Veuillez patienter.")
+                    # Conteneurs pour les retours visuels
+                    status_box = st.info("🔄 Initialisation du moteur d'analyse sémantique... Veuillez patienter.")
+                    progress_bar = st.progress(0)
                     report_placeholder = st.empty()
                     
                     try:
@@ -662,6 +665,8 @@ def run():
                         
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel('gemini-2.5-flash')
+                        
+                        progress_bar.progress(20, text="Extraction des artefacts depuis les bases de données...")
                         
                         # --- CONSTRUCTION DYNAMIQUE DES FAITS (Data-Driven) ---
                         faits_ia = []
@@ -688,7 +693,9 @@ def run():
 
                         faits_texte = "\n".join(faits_ia) if faits_ia else "Aucun artefact critique identifié dans les jeux de données fournis."
 
-                        # --- MASTER PROMPT ADOUCI POUR PASSER LES FILTRES DE SÉCURITÉ DE L'API ---
+                        progress_bar.progress(40, text="Construction de la requête (Prompt Engineering)...")
+
+                        # --- MASTER PROMPT ---
                         prompt = f"""Agissez en tant qu'Expert Analyste DFIR (Digital Forensics and Incident Response).
                         Rédigez un rapport d'investigation formel, structuré et impartial pour le dossier #2026-TC.
                         Périmètre technique : Systèmes d'exploitation Windows et supports de stockage USB.
@@ -716,48 +723,55 @@ def run():
                         4. FORMATAGE : Utilisez le format Markdown standard. Ne générez aucun bloc de code (```) ni d'indentation au début des lignes.
                         """
                         
-                        status_box.info("🧠 Génération du rapport d'expertise en cours via le modèle LLM...")
+                        progress_bar.progress(60, text="Connexion à l'API Gemini et génération en cours...")
+                        status_box.info("🧠 Le modèle LLM rédige actuellement le rapport. Veuillez patienter...")
                         
-                        # --- STREAMING FLUIDE (Sans CSS complexe pendant la boucle) ---
+                        # --- STREAMING FLUIDE ---
                         full_report = ""
                         response = model.generate_content(prompt, stream=True)
                         
                         for chunk in response:
                             try:
                                 full_report += chunk.text
-                                # Affichage simple et rapide pendant la génération
+                                # Affichage simple du texte en cours de frappe
                                 report_placeholder.markdown(full_report + " ▌")
                             except Exception:
-                                continue # Ignore silencieusement les erreurs de flux mineures
+                                continue
+                        
+                        progress_bar.progress(100, text="Finalisation et mise en page du document...")
+                        time.sleep(0.5) # Petit délai pour laisser l'UI se mettre à jour
                         
                         end_time = time.time()
                         temps_ecoule = round(end_time - start_time, 2)
                         
                         if not full_report.strip():
                             status_box.empty()
+                            progress_bar.empty()
                             st.error("❌ Échec de la génération. Le filtre de sécurité automatisé de l'API a intercepté la requête. Veuillez vérifier la nature des artefacts.")
                         else:
-                            # Nettoyage et application du rendu visuel final (Document juridique)
+                            # Nettoyage Markdown
                             clean_report = full_report.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
                             
-                            report_placeholder.markdown(f"""
-                            <div style="background-color: #ffffff; padding: 50px; border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,0.10); margin-top: 20px; border-top: 15px solid #1e3a8a; font-family: 'Times New Roman', serif; color: #111827; line-height: 1.6;">
-                                {clean_report}
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
+                            # Sauvegarde en session (pour affichage dans la section 2)
                             st.session_state.final_report = clean_report
-                            status_box.empty() # Effacement du message d'attente
+                            
+                            # On vide les conteneurs de chargement
+                            status_box.empty() 
+                            progress_bar.empty()
+                            report_placeholder.empty() # On efface le texte brut pour laisser place au texte "bien formaté" (section 2)
+                            
                             st.success(f"✅ Rapport technique finalisé en {temps_ecoule} secondes.")
                             
                     except Exception as e:
                         status_box.empty()
+                        if 'progress_bar' in locals(): progress_bar.empty()
                         st.error(f"❌ Une anomalie d'exécution a été rencontrée lors de l'appel à l'API : {str(e)}")
                         
             # =========================================================================
-            # 2. AFFICHAGE DU BOUTON PDF (HORS BOUCLE)
+            # 2. AFFICHAGE DU RAPPORT (Design CSS "Papier") ET BOUTON PDF (HORS BOUCLE)
             # =========================================================================
             if st.session_state.final_report:
+                # 1. Le bouton de téléchargement d'abord
                 pdf_bytes = generate_pdf_report(st.session_state.final_report)
                 st.download_button(
                     label="📥 Exporter le Rapport Officiel (Format PDF)",
@@ -767,7 +781,7 @@ def run():
                     type="primary"
                 )        
         
-                # CSS POUR RENDRE LE RAPPORT COMME UNE FEUILLE DE PAPIER À L'ÉCRAN
+                # 2. Le style CSS pour le conteneur
                 st.markdown("""
                 <style>
                     .report-container {
@@ -776,8 +790,9 @@ def run():
                         border-radius: 4px;
                         box-shadow: 0 10px 30px rgba(0,0,0,0.15);
                         margin-top: 20px;
+                        margin-bottom: 20px;
                         border-top: 15px solid #1e3a8a;
-                        font-family: 'Times New Roman', Times, serif; /* Police type juridique */
+                        font-family: 'Times New Roman', Times, serif;
                         color: #111827;
                         line-height: 1.6;
                     }
@@ -788,6 +803,5 @@ def run():
                 </style>
                 """, unsafe_allow_html=True)
                 
-                st.markdown('<div class="report-container">', unsafe_allow_html=True)
-                st.markdown(st.session_state.final_report, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+                # 3. L'affichage final dans la boîte de style
+                st.markdown(f'<div class="report-container">{st.session_state.final_report}</div>', unsafe_allow_html=True)

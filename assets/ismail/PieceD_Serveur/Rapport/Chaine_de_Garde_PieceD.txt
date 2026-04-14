@@ -1,0 +1,45 @@
+﻿================================================================
+       FORMULAIRE DE CHAÎNE DE GARDE (CHAIN OF CUSTODY)
+             Affaire : TechCorp - Fuite de données
+================================================================
+
+PIÈCE À CONVICTION : D - Serveur Linux Pivot
+-----------------------------------------
+
+--- Fichier D-1 : serveur-pivot-authlog.img ---
+Numéro de pièce      : PIECE-D-001
+Description           : Image disque contenant les logs 
+                        d'authentification (auth.log) du serveur 
+                        Linux interne auquel l'employé avait accès.
+Type de fichier       : IMG (Image disque brute)
+Taille                : 20 Mo
+MD5                   : 17B4598424E87D8E3742BD9FD356942B
+SHA-256               : 951798ADF97DA6B96A4CEC55DA6B595C177E7D3F7F28D455D35143A0140A0231
+
+--- Fichier D-2 : serveur-pivot-bash.img ---
+Numéro de pièce      : PIECE-D-002
+Description           : Image disque contenant l'historique des 
+                        commandes Bash du serveur Linux interne 
+                        auquel l'employé avait accès.
+Type de fichier       : IMG (Image disque brute)
+Taille                : 10 Mo
+MD5                   : 5E3B5B10BB6A6CA3B15624A58F9EFED7
+SHA-256               : 9869AA6E339FF3F89683E3B35D7AC892C469D5E8C8553571846FCF3804DBE216
+
+HISTORIQUE DE MANIPULATION :
+--------------------------------------------------------------
+Date/Heure           | Action               | Opérateur
+--------------------------------------------------------------
+2026-03-30 10:54 | Réception fichiers   | Boutoucha Ismail
+2026-03-30 10:54 | Calcul des hash      | Boutoucha Ismail
+2026-03-30 10:54 | Création copies trav.| Boutoucha Ismail
+2026-03-30 10:54 | Vérification intég.  | Boutoucha Ismail
+2026-03-30 10:54 | Protection lecture s. | Boutoucha Ismail
+--------------------------------------------------------------
+
+OBJECTIF DE L'INVESTIGATION :
+  Rechercher des traces de commandes, des scripts suspects 
+  ou des fichiers de transit sur le serveur Linux pivot.
+
+Signature de l'enquêteur : ________________________
+================================================================
