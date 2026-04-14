@@ -235,8 +235,12 @@ def parse_pcap(pcap_path):
 # GÉNÉRATION RAPPORT IA (GEMINI)
 # =============================================================================
 
-def generer_rapport_pcap_ia(resultats, api_key):
-    """Génère un rapport d'investigation PCAP via Gemini 2.5 Flash."""
+def generer_rapport_pcap_ia(resultats, api_key, report_ph):
+    """Génère un rapport d'investigation PCAP via Gemini 2.5 Flash.
+    
+    report_ph : st.empty() placeholder créé dans run(), pour que le streaming
+                s'affiche au bon endroit et soit remplacé par la version finale.
+    """
 
     sessions  = resultats['sessions_ftp']
     total_pkt = resultats['total_paquets']
@@ -296,10 +300,10 @@ INSTRUCTIONS DE RÉDACTION :
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-flash')
 
-    full_report  = ""
-    report_ph    = st.empty()
-    response     = model.generate_content(prompt, stream=True)
+    full_report = ""
+    response    = model.generate_content(prompt, stream=True)
 
+    # Streaming dans le placeholder fourni par run()
     for chunk in response:
         try:
             full_report += chunk.text
@@ -786,21 +790,26 @@ def run():
                 api_key = st.text_input("🔑 Clé API Google Gemini :", type="password",
                                         key="pcap_api_key")
 
+            # ── BOUTON DE GÉNÉRATION ─────────────────────────────────────────
             if st.button("⚖️ Générer le Rapport Officiel PCAP", type="primary"):
                 if not api_key:
                     st.error("❌ Clé API requise pour initialiser le modèle de langage.")
                 else:
-                    status_box = st.info(
+                    # Conteneurs de retour visuel — créés DANS le bouton
+                    # (pattern identique à windows_usb_zakaria.py)
+                    status_box        = st.info(
                         "🔄 Initialisation du moteur d'analyse... Transmission des artefacts..."
                     )
-                    start_time = time.time()
+                    report_placeholder = st.empty()
+                    start_time         = time.time()
 
                     try:
-                        rapport = generer_rapport_pcap_ia(res, api_key)
+                        rapport = generer_rapport_pcap_ia(res, api_key, report_placeholder)
                         elapsed = round(time.time() - start_time, 2)
 
                         if not rapport.strip():
                             status_box.empty()
+                            report_placeholder.empty()
                             st.error(
                                 "❌ Échec de la génération. "
                                 "Le filtre de sécurité de l'API a intercepté la requête."
@@ -811,38 +820,61 @@ def run():
                                 .replace("```text", "").replace("```markdown", "")
                                 .replace("```", "").strip()
                             )
+                            # Sauvegarde en session
                             st.session_state.pcap_rapport_ia = clean_rapport
+                            # On vide le texte brut streamé — la section 2
+                            # ci-dessous prend le relais avec le rendu stylisé
                             status_box.empty()
+                            report_placeholder.empty()
                             st.success(f"✅ Rapport finalisé en {elapsed} secondes.")
 
                     except Exception as e:
                         status_box.empty()
+                        report_placeholder.empty()
                         st.error(f"❌ Anomalie lors de l'appel API : {str(e)}")
 
-            # Affichage et export PDF
+            # ── AFFICHAGE DU RAPPORT + BOUTON PDF (HORS BOUTON) ──────────────
+            # Affiché à chaque rerun dès que le rapport existe en session.
             if st.session_state.pcap_rapport_ia:
-                rapport_clean = st.session_state.pcap_rapport_ia
+                rapport_sauvegarde = st.session_state.pcap_rapport_ia
 
-                st.markdown(
-                    f"""
-                    <div style="background:#ffffff; padding:50px; border-radius:4px;
-                                box-shadow:0 10px 30px rgba(0,0,0,0.10); margin-top:20px;
-                                border-top:15px solid #1e3a8a;
-                                font-family:'Times New Roman',serif;
-                                color:#111827; line-height:1.6;">
-                        {rapport_clean}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                pdf_bytes = generate_pdf_report(rapport_clean)
+                # 1. Bouton PDF EN PREMIER (comme zakaria) — garantit son rendu
+                pdf_bytes = generate_pdf_report(rapport_sauvegarde)
                 st.download_button(
                     label="📥 Exporter le Rapport Officiel (Format PDF)",
                     data=pdf_bytes,
                     file_name="Rapport_Expertise_PCAP_2026_TC.pdf",
                     mime="application/pdf",
                     type="primary"
+                )
+
+                # 2. CSS document juridique
+                st.markdown("""
+                <style>
+                    .report-container-pcap {
+                        background-color: #ffffff;
+                        padding: 50px;
+                        border-radius: 4px;
+                        box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+                        margin-top: 20px;
+                        border-top: 15px solid #1e3a8a;
+                        font-family: 'Times New Roman', Times, serif;
+                        color: #111827;
+                        line-height: 1.6;
+                    }
+                    .report-container-pcap h1,
+                    .report-container-pcap h2,
+                    .report-container-pcap h3 {
+                        color: #0f172a;
+                        font-family: 'Segoe UI', Tahoma, Geneva, sans-serif;
+                    }
+                </style>
+                """, unsafe_allow_html=True)
+
+                # 3. Rapport dans sa boîte stylisée
+                st.markdown(
+                    f'<div class="report-container-pcap">{rapport_sauvegarde}</div>',
+                    unsafe_allow_html=True
                 )
 
 
