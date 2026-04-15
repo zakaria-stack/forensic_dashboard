@@ -235,7 +235,9 @@ elif page == "Serveur Linux & PCAP":
 
 elif page == "Mobile & NLP (IA)":
     try:
+        import importlib
         import mobile_nlp
+        mobile_nlp = importlib.reload(mobile_nlp)
         mobile_nlp.run()
     except Exception as e:
         st.info("⚠️ Le module Mobile de la plateforme C.I.A.F. est en cours de développement par Ahmed.")
