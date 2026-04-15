@@ -17,10 +17,35 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from gemini_client import generer_contenu_gemini
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
+
+def _charger_env_mobile():
+    """Charge le fichier .env du projet pour le module Mobile uniquement."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        if not os.path.exists(env_path):
+            return
+
+        # Fallback minimal si python-dotenv n'est pas disponible dans l'env actif.
+        with open(env_path, "r", encoding="utf-8") as env_file:
+            for ligne in env_file:
+                ligne = ligne.strip()
+                if not ligne or ligne.startswith("#") or "=" not in ligne:
+                    continue
+                cle, valeur = ligne.split("=", 1)
+                cle = cle.strip()
+                valeur = valeur.strip().strip('"').strip("'")
+                os.environ.setdefault(cle, valeur)
+    else:
+        load_dotenv(dotenv_path=env_path)
+
+
+_charger_env_mobile()
 
 # Patterns suspects pour la détection NLP
 PATTERNS_SUSPECTS = {
@@ -52,6 +77,104 @@ PATTERNS_SUSPECTS = {
 }
 
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "tiny")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+
+
+def _get_gemini_api_key_mobile():
+    _charger_env_mobile()
+    return os.getenv("GEMINI_API_KEY")
+
+
+def _extraire_texte_reponse_gemini(response):
+    texte = getattr(response, "text", None)
+    if texte:
+        return texte
+
+    morceaux = []
+    for candidat in getattr(response, "candidates", []) or []:
+        contenu = getattr(candidat, "content", None)
+        for part in getattr(contenu, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                morceaux.append(part_text)
+
+    return "\n".join(morceaux).strip()
+
+
+def _generer_contenu_gemini_mobile(prompt, on_chunk=None):
+    """Genere le rapport via Gemini Flash avec streaming quand le SDK le permet."""
+    api_key = _get_gemini_api_key_mobile()
+    if not api_key:
+        raise RuntimeError(
+            "Clé API Gemini introuvable. Ajoutez GEMINI_API_KEY dans le fichier .env du projet."
+        )
+
+    erreurs_sdk = []
+
+    try:
+        import google.generativeai as genai_legacy
+    except ImportError as exc:
+        erreurs_sdk.append(f"google-generativeai indisponible : {exc}")
+    else:
+        genai_legacy.configure(api_key=api_key)
+        model = genai_legacy.GenerativeModel(GEMINI_MODEL_NAME)
+        full_report = ""
+        response_stream = model.generate_content(prompt, stream=True)
+
+        for chunk in response_stream:
+            try:
+                chunk_text = _extraire_texte_reponse_gemini(chunk)
+            except Exception:
+                continue
+
+            if not chunk_text:
+                continue
+
+            full_report += chunk_text
+            if on_chunk:
+                on_chunk(full_report)
+
+        if full_report.strip():
+            return full_report
+
+    try:
+        from google import genai
+    except ImportError as exc:
+        erreurs_sdk.append(f"google-genai indisponible : {exc}")
+    else:
+        client = genai.Client(api_key=api_key)
+        full_report = ""
+
+        if hasattr(client.models, "generate_content_stream"):
+            response_stream = client.models.generate_content_stream(
+                model=GEMINI_MODEL_NAME,
+                contents=prompt
+            )
+            for chunk in response_stream:
+                chunk_text = _extraire_texte_reponse_gemini(chunk)
+                if not chunk_text:
+                    continue
+
+                full_report += chunk_text
+                if on_chunk:
+                    on_chunk(full_report)
+        else:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL_NAME,
+                contents=prompt
+            )
+            full_report = _extraire_texte_reponse_gemini(response)
+            if on_chunk and full_report:
+                on_chunk(full_report)
+
+        if full_report.strip():
+            return full_report
+
+    detail = " | ".join(erreurs_sdk) if erreurs_sdk else "Réponse vide reçue depuis Gemini."
+    raise RuntimeError(
+        "Impossible de générer le rapport avec Gemini Flash. "
+        f"Détail : {detail}"
+    )
 
 def _normaliser_texte_pdf(texte):
     """Nettoie le texte pour rester compatible avec FPDF latin-1."""
@@ -135,7 +258,15 @@ def generate_pdf_report(texte_md):
         safe_line = contenu.encode('latin-1', 'ignore').decode('latin-1')
         pdf.multi_cell(0, 6, txt=safe_line)
 
-    return pdf.output(dest='S').encode('latin-1')
+    pdf_output = pdf.output(dest='S')
+    if isinstance(pdf_output, bytes):
+        return pdf_output
+    if isinstance(pdf_output, bytearray):
+        return bytes(pdf_output)
+    if isinstance(pdf_output, str):
+        return pdf_output.encode('latin-1')
+
+    return bytes(pdf_output)
 
 
 def _whisper_cache_dir():
@@ -348,53 +479,83 @@ def run():
             st.warning("⚠️ Veuillez d'abord analyser les messages texte et/ou les notes vocales.")
         else:
             st.success("✅ Les données nécessaires sont disponibles pour générer le rapport.")
+            api_key = _get_gemini_api_key_mobile()
+            if api_key:
+                st.success(
+                    f"🔒 Clé API Gemini chargée depuis `.env` pour le modèle `{GEMINI_MODEL_NAME}`."
+                )
+            else:
+                st.warning(
+                    "⚠️ Clé Gemini introuvable. Ajoutez `GEMINI_API_KEY=...` dans le fichier `.env` "
+                    "avant de générer le rapport."
+                )
 
             # BOUTON DE GÉNÉRATION
             if st.button("🚀 Générer le rapport d'investigation", type="primary", key="generate_ai_report"):
-                # Interface d'attente fluide
-                status_box = st.info("🔄 Initialisation du moteur d'analyse... Veuillez patienter.")
-                progress_bar = st.progress(0)
-                report_placeholder = st.empty()
+                if not api_key:
+                    st.error("❌ Échec : la clé `GEMINI_API_KEY` est requise dans le fichier `.env`.")
+                else:
+                    # Interface d'attente fluide
+                    status_box = st.info("🔄 Initialisation du moteur d'analyse... Veuillez patienter.")
+                    progress_bar = st.progress(0)
+                    report_placeholder = st.empty()
 
-                try:
-                    start_time = time.time()
-                    st.session_state['rapport_mobile_ia'] = None
+                    try:
+                        start_time = time.time()
+                        st.session_state['rapport_mobile_ia'] = None
 
-                    progress_bar.progress(20, text="Agrégation des données textuelles et vocales...")
-                    time.sleep(0.3)
+                        progress_bar.progress(20, text="Agrégation des données textuelles et vocales...")
+                        time.sleep(0.3)
 
-                    progress_bar.progress(40, text="Construction de la requête forensic...")
-                    status_box.info("🧠 Préparation du contexte d'analyse mobile pour Gemini Flash...")
-                    time.sleep(0.3)
+                        progress_bar.progress(40, text="Construction de la requête forensic...")
+                        status_box.info("🧠 Préparation du contexte d'analyse mobile pour Gemini Flash...")
+                        time.sleep(0.3)
 
-                    progress_bar.progress(65, text="Connexion à l'API Gemini et rédaction en cours...")
-                    status_box.info("🧠 Le modèle Gemini Flash rédige le rapport. Veuillez patienter...")
-                    rapport = generer_rapport_mobile_ia(text_results, audio_results)
+                        progress_bar.progress(65, text="Connexion à l'API Gemini et rédaction en cours...")
+                        status_box.info("🧠 Le modèle Gemini Flash rédige le rapport. Veuillez patienter...")
 
-                    progress_bar.progress(90, text="Mise en page et validation du document final...")
-                    clean_report = rapport.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
+                        progression_stream = {"valeur": 65}
 
-                    if not clean_report:
-                        raise ValueError("Gemini a retourne une reponse vide. Verifiez la cle API et le contenu fourni.")
+                        def afficher_generation_en_direct(texte_partiel):
+                            nouvelle_valeur = min(88, 65 + len(texte_partiel) // 700)
+                            if nouvelle_valeur > progression_stream["valeur"]:
+                                progression_stream["valeur"] = nouvelle_valeur
+                                progress_bar.progress(
+                                    nouvelle_valeur,
+                                    text="Rédaction du rapport par Gemini Flash..."
+                                )
+                            report_placeholder.markdown(texte_partiel + " ▌")
 
-                    report_placeholder.markdown(clean_report + "\n\n`Preparation de l'affichage final...`")
-                    st.session_state['rapport_mobile_ia'] = clean_report
+                        rapport = generer_rapport_mobile_ia(
+                            text_results,
+                            audio_results,
+                            on_chunk=afficher_generation_en_direct
+                        )
 
-                    progress_bar.progress(100, text="Terminé !")
-                    time.sleep(0.3)
+                        progress_bar.progress(90, text="Mise en page et validation du document final...")
+                        clean_report = rapport.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
 
-                    status_box.empty()
-                    progress_bar.empty()
-                    report_placeholder.empty()
+                        if not clean_report:
+                            raise ValueError("Gemini a retourne une reponse vide. Verifiez la cle API et le contenu fourni.")
 
-                    temps_ecoule = round(time.time() - start_time, 2)
-                    st.success(f"✅ Rapport généré avec succès en {temps_ecoule} secondes.")
+                        report_placeholder.markdown(clean_report + "\n\n`Préparation de l'affichage final...`")
+                        st.session_state['rapport_mobile_ia'] = clean_report
 
-                except Exception as e:
-                    status_box.empty()
-                    progress_bar.empty()
-                    report_placeholder.empty()
-                    st.error(f"❌ Erreur lors de la génération du rapport : {str(e)}")
+                        progress_bar.progress(100, text="Terminé !")
+                        time.sleep(0.3)
+
+                        status_box.empty()
+                        progress_bar.empty()
+                        report_placeholder.empty()
+
+                        temps_ecoule = round(time.time() - start_time, 2)
+                        st.success(f"✅ Rapport généré avec succès en {temps_ecoule} secondes.")
+
+                    except Exception as e:
+                        status_box.empty()
+                        progress_bar.empty()
+                        report_placeholder.empty()
+                        st.error(f"❌ Erreur lors de la génération du rapport : {str(e)}")
 
             # AFFICHAGE DU RÉSULTAT ET BOUTON PDF (Hors de la boucle du bouton)
             if st.session_state.get('rapport_mobile_ia'):
@@ -683,9 +844,9 @@ def transcrire_et_analyser_whisper(audio_files):
 # ═══════════════════════════════════════════════════════════════════
 # FONCTIONS D'AFFICHAGE
 # ═══════════════════════════════════════════════════════════════════
-def generer_rapport_mobile_ia(text_results, audio_results):
+def generer_rapport_mobile_ia(text_results, audio_results, on_chunk=None):
     """
-    Génère un rapport d'investigation forensic mobile via Gemini 2.5 Flash.
+    Génère un rapport d'investigation forensic mobile via Gemini Flash.
     Le rapport est limité au périmètre Mobile / WhatsApp / NLP / Audio.
     """
 
@@ -800,7 +961,7 @@ def generer_rapport_mobile_ia(text_results, audio_results):
     4. FORMATAGE : Utilisez le format Markdown standard. Ne générez aucun bloc de code (```) ni d'indentation au début des lignes. Ne générez pas de JSON dans votre réponse.
     """
     
-    return generer_contenu_gemini(prompt_rapport)
+    return _generer_contenu_gemini_mobile(prompt_rapport, on_chunk=on_chunk)
 
 def afficher_resultats_texte(results):
     """Affiche les résultats de l'analyse des messages texte"""
