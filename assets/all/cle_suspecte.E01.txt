@@ -1,0 +1,41 @@
+﻿Created By Exterro® FTK® Imager 8.2.0.33 
+
+Case Information: 
+Acquired using: ADI8.2.0.33
+Case Number:  
+Evidence Number:  
+Unique Description: 
+Examiner:  
+Notes:  
+
+--------------------------------------------------------------
+
+Information for F:\evidence\cle_suspecte:
+
+Physical Evidentiary Item (Source) Information:
+[Device Info]
+ Source Type: Logical
+[Drive Geometry]
+ Bytes per Sector: 512
+ Sector Count: 7,739,359
+[Physical Drive Information]
+ Removable drive: True
+ Source data size: 3778 MB
+ Sector count:    7739359
+[Computed Hashes]
+ MD5 checksum:    d33bb135aa337e46447c215641b73f75
+ SHA1 checksum:   e6983cbdde0018447f7b0e80278a4f4114f02e80
+
+Image Information:
+ Acquisition started:   Sun Feb 22 06:27:48 2026
+ Acquisition finished:  Sun Feb 22 06:33:24 2026
+ Segment list:
+  F:\evidence\cle_suspecte.E01
+ COMPUTED HASH :  d33bb135aa337e46447c215641b73f75
+ COMPUTED HASH :  e6983cbdde0018447f7b0e80278a4f4114f02e80
+
+Image Verification Results:
+ Verification started:  Sun Feb 22 06:33:24 2026
+ Verification finished: Sun Feb 22 06:35:31 2026
+ MD5 checksum:    d33bb135aa337e46447c215641b73f75 : verified
+ SHA1 checksum:   e6983cbdde0018447f7b0e80278a4f4114f02e80 : verified

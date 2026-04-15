@@ -6,19 +6,17 @@ Affaire : TechCorp - Fuite de données Projet Orion
 
 """
 import os
-from dotenv import load_dotenv
-from google import genai
-
-import streamlit as st
 import sqlite3
 import json
 import hashlib
-import os
 from datetime import datetime
+import time
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import time
+import streamlit as st
+
 from gemini_client import generer_contenu_gemini
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -53,7 +51,124 @@ PATTERNS_SUSPECTS = {
     }
 }
 
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "tiny")
 
+def _normaliser_texte_pdf(texte):
+    """Nettoie le texte pour rester compatible avec FPDF latin-1."""
+    remplacements = {
+        'œ': 'oe',
+        'Œ': 'OE',
+        '’': "'",
+        '‘': "'",
+        '“': '"',
+        '”': '"',
+        '–': '-',
+        '—': '-',
+        '…': '...',
+        '→': '->',
+        '•': '-',
+        '\u00a0': ' ',
+        '🔴': '[Critique]',
+        '🟠': '[Eleve]',
+        '🟡': '[Moyen]',
+        '🟢': '[Faible]',
+        '✅': '[OK]',
+        '⚠️': '[Attention]',
+        '📝': '[Rapport]',
+        '📱': '[Mobile]',
+        '🎙️': '[Audio]',
+        '🤖': '[IA]',
+        '🏛️': '[DFIR]',
+    }
+
+    texte_normalise = texte or ""
+    for caractere, remplacement in remplacements.items():
+        texte_normalise = texte_normalise.replace(caractere, remplacement)
+
+    return texte_normalise
+
+
+def generate_pdf_report(texte_md):
+    """Genere un PDF robuste a partir du rapport Markdown."""
+    try:
+        from fpdf import FPDF
+    except ImportError as exc:
+        raise RuntimeError(
+            "La bibliotheque fpdf n'est pas installee. Installez-la avec : pip install fpdf"
+        ) from exc
+
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 12)
+            self.cell(0, 10, "RAPPORT D'EXPERTISE FORENSIQUE - POLE MOBILE", 0, 1, 'C')
+            self.ln(5)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_title("Rapport Expertise Mobile")
+
+    texte_normalise = _normaliser_texte_pdf(texte_md)
+
+    for ligne in texte_normalise.splitlines():
+        ligne = ligne.strip()
+
+        if not ligne:
+            pdf.ln(4)
+            continue
+
+        if ligne.startswith('#'):
+            titre = ligne.replace('#', '').replace('*', '').strip().upper()
+            pdf.set_font("Arial", 'B', 12)
+            safe_title = titre.encode('latin-1', 'ignore').decode('latin-1')
+            pdf.multi_cell(0, 8, txt=safe_title)
+            pdf.ln(2)
+            continue
+
+        contenu = ligne.replace('**', '').replace('*', '-').replace('`', '')
+        pdf.set_font("Arial", size=11)
+        safe_line = contenu.encode('latin-1', 'ignore').decode('latin-1')
+        pdf.multi_cell(0, 6, txt=safe_line)
+
+    return pdf.output(dest='S').encode('latin-1')
+
+
+def _whisper_cache_dir():
+    return os.getenv(
+        "WHISPER_DOWNLOAD_ROOT",
+        os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+    )
+
+
+def _whisper_model_cache_path(model_name=WHISPER_MODEL_NAME):
+    try:
+        import whisper
+    except ImportError:
+        return None
+
+    model_url = whisper._MODELS.get(model_name)
+    if not model_url:
+        return None
+
+    return os.path.join(_whisper_cache_dir(), os.path.basename(model_url))
+
+
+def _whisper_model_cached(model_name=WHISPER_MODEL_NAME):
+    model_path = _whisper_model_cache_path(model_name)
+    return bool(model_path and os.path.exists(model_path))
+
+
+def _commande_prechargement_whisper():
+    cache_dir = _whisper_cache_dir()
+    return (
+        f"python3 -c \"import whisper; whisper.load_model('{WHISPER_MODEL_NAME}', "
+        f"download_root=r'{cache_dir}')\""
+    )
 # ═══════════════════════════════════════════════════════════════════
 # FONCTION PRINCIPALE
 # ═══════════════════════════════════════════════════════════════════
@@ -136,24 +251,30 @@ def run():
             st.info("""
             🎙️ **Transcription avec Whisper (OpenAI)**
             
-            - Modèle : `tiny` (optimisé pour CPU)
+            - Moteur : `Whisper {}` uniquement
+            - Exécution : CPU local
             - Temps estimé : ~30-60 secondes par fichier
-            - Précision : ~70-75% (français)
+            - Précision attendue : ~70-75% (français)
             
             ⏱️ **Temps total estimé :** {:.1f} minutes
             
-            💡 **Astuce :** Le modèle sera chargé une seule fois pour tous les fichiers.
-            """.format(len(audio_files) * 0.5))
+            💡 **Astuce :** au premier lancement, Whisper peut devoir télécharger son modèle une seule fois dans le cache local.
+            """.format(WHISPER_MODEL_NAME, len(audio_files) * 0.5))
             
             if st.button("🚀 Transcrire et Analyser avec Whisper", key="analyze_audio"):
                 with st.spinner(f"Transcription de {len(audio_files)} fichiers avec Whisper..."):
                     try:
+                        st.session_state['audio_results'] = []
                         results = transcrire_et_analyser_whisper(audio_files)
-                        st.session_state['audio_results'] = results
-                        st.success("✅ Transcription et analyse terminées !")
+                        if results:
+                            st.session_state['audio_results'] = results
+                            st.success("✅ Transcription et analyse terminées !")
+                        else:
+                            st.warning("⚠️ Aucun fichier audio n'a pu être transcrit.")
                     except Exception as e:
                         st.error(f"❌ Erreur lors de la transcription : {str(e)}")
-                        st.info("💡 Vérifiez que Whisper est installé : pip install openai-whisper")
+                        st.info("💡 Whisper uniquement est activé. Vérifiez le cache local du modèle ou la connexion nécessaire pour le premier téléchargement.")
+                        st.code(_commande_prechargement_whisper(), language="bash")
             
             if 'audio_results' in st.session_state:
                 afficher_resultats_audio(st.session_state['audio_results'])
@@ -207,50 +328,113 @@ def run():
         if st.button("Générer Chain of Custody"):
             generer_chain_of_custody()
 
-        # ═══════════════════════════════════════════════════════════════
-    # TAB 5 : RAPPORT IA
+# ═══════════════════════════════════════════════════════════════
+    # TAB 5 : RAPPORT IA (AVEC BARRE DE PROGRESSION ET EXPORT PDF)
     # ═══════════════════════════════════════════════════════════════
-
     with tab5:
         st.header("📝 Génération du Rapport d'Investigation Mobile")
 
         st.info("""
         Ce module génère un rapport d'investigation **limité au périmètre Mobile / WhatsApp / NLP / Audio**.
-        
-        Le rapport est produit à partir :
-        - des messages texte analysés
-        - des notes vocales transcrites et analysées
-        - d'un prompt forensic préparé par l'analyste
+        Le rapport est produit à partir des messages texte et des notes vocales analysés.
         """)
 
         text_results = st.session_state.get('text_results', [])
         audio_results = st.session_state.get('audio_results', [])
+        if 'rapport_mobile_ia' not in st.session_state:
+            st.session_state['rapport_mobile_ia'] = None
 
         if not text_results and not audio_results:
             st.warning("⚠️ Veuillez d'abord analyser les messages texte et/ou les notes vocales.")
         else:
             st.success("✅ Les données nécessaires sont disponibles pour générer le rapport.")
 
-            if st.button("🚀 Générer le rapport d'investigation", key="generate_ai_report"):
-                with st.spinner("Génération du rapport avec Gemini 2.5 Flash..."):
-                    try:
-                        rapport = generer_rapport_mobile_ia(text_results, audio_results)
-                        st.session_state['rapport_mobile_ia'] = rapport
-                        st.success("✅ Rapport généré avec succès.")
-                    except Exception as e:
-                        st.error(f"❌ Erreur lors de la génération du rapport : {str(e)}")
+            # BOUTON DE GÉNÉRATION
+            if st.button("🚀 Générer le rapport d'investigation", type="primary", key="generate_ai_report"):
+                # Interface d'attente fluide
+                status_box = st.info("🔄 Initialisation du moteur d'analyse... Veuillez patienter.")
+                progress_bar = st.progress(0)
+                report_placeholder = st.empty()
 
-            if 'rapport_mobile_ia' in st.session_state:
-                st.subheader("📄 Rapport généré")
-                st.markdown(st.session_state['rapport_mobile_ia'])
+                try:
+                    start_time = time.time()
+                    st.session_state['rapport_mobile_ia'] = None
 
-                st.download_button(
-                    label="📥 Télécharger le rapport (.md)",
-                    data=st.session_state['rapport_mobile_ia'],
-                    file_name="rapport_investigation_mobile_ia.md",
-                    mime="text/markdown"
-                )
+                    progress_bar.progress(20, text="Agrégation des données textuelles et vocales...")
+                    time.sleep(0.3)
 
+                    progress_bar.progress(40, text="Construction de la requête forensic...")
+                    status_box.info("🧠 Préparation du contexte d'analyse mobile pour Gemini Flash...")
+                    time.sleep(0.3)
+
+                    progress_bar.progress(65, text="Connexion à l'API Gemini et rédaction en cours...")
+                    status_box.info("🧠 Le modèle Gemini Flash rédige le rapport. Veuillez patienter...")
+                    rapport = generer_rapport_mobile_ia(text_results, audio_results)
+
+                    progress_bar.progress(90, text="Mise en page et validation du document final...")
+                    clean_report = rapport.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
+
+                    if not clean_report:
+                        raise ValueError("Gemini a retourne une reponse vide. Verifiez la cle API et le contenu fourni.")
+
+                    report_placeholder.markdown(clean_report + "\n\n`Preparation de l'affichage final...`")
+                    st.session_state['rapport_mobile_ia'] = clean_report
+
+                    progress_bar.progress(100, text="Terminé !")
+                    time.sleep(0.3)
+
+                    status_box.empty()
+                    progress_bar.empty()
+                    report_placeholder.empty()
+
+                    temps_ecoule = round(time.time() - start_time, 2)
+                    st.success(f"✅ Rapport généré avec succès en {temps_ecoule} secondes.")
+
+                except Exception as e:
+                    status_box.empty()
+                    progress_bar.empty()
+                    report_placeholder.empty()
+                    st.error(f"❌ Erreur lors de la génération du rapport : {str(e)}")
+
+            # AFFICHAGE DU RÉSULTAT ET BOUTON PDF (Hors de la boucle du bouton)
+            if st.session_state.get('rapport_mobile_ia'):
+                try:
+                    pdf_bytes = generate_pdf_report(st.session_state['rapport_mobile_ia'])
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la preparation du PDF : {str(e)}")
+                else:
+                    st.download_button(
+                        label="📥 Exporter le Rapport Officiel (Format PDF)",
+                        data=pdf_bytes,
+                        file_name="Rapport_Expertise_Mobile_2026_TC.pdf",
+                        mime="application/pdf",
+                        type="primary"
+                    )
+
+                # 2. Design CSS "Format Papier"
+                st.markdown("""
+                <style>
+                    .report-container {
+                        background-color: #ffffff;
+                        padding: 50px;
+                        border-radius: 4px;
+                        box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+                        margin-top: 20px;
+                        margin-bottom: 20px;
+                        border-top: 15px solid #1e3a8a;
+                        font-family: 'Times New Roman', Times, serif;
+                        color: #111827;
+                        line-height: 1.6;
+                    }
+                    .report-container h1, .report-container h2, .report-container h3 {
+                        color: #0f172a;
+                        font-family: 'Segoe UI', Tahoma, Geneva, sans-serif;
+                    }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                # 3. Affichage du texte dans le cadre
+                st.markdown(f'<div class="report-container">{st.session_state["rapport_mobile_ia"]}</div>', unsafe_allow_html=True)
 # ═══════════════════════════════════════════════════════════════════
 # SYSTÈME NLP - ANALYSE DE TEXTE
 # ═══════════════════════════════════════════════════════════════════
@@ -376,102 +560,120 @@ def analyser_messages_whatsapp(db_file):
 def transcrire_et_analyser_whisper(audio_files):
     """
     Transcrit les fichiers audio avec Whisper et analyse avec NLP
-    Optimisé pour CPU i9
+    Optimisé pour CPU i9, sans fallback externe
     """
-    
+
     try:
         import whisper
     except ImportError:
-        st.error("""
-        ❌ Whisper n'est pas installé !
-        
-        Pour l'installer, exécutez :
-        ```
-        pip install openai-whisper
-        ```
-        """)
-        return []
-    
-    # Charger le modèle Whisper (une seule fois)
-    st.info("📥 Chargement du modèle Whisper 'tiny' (optimisé CPU)...")
-    
+        raise RuntimeError(
+            "Le package openai-whisper n'est pas installe. Installez-le avec : pip install openai-whisper"
+        )
+
+    cache_dir = _whisper_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+
+    if _whisper_model_cached(WHISPER_MODEL_NAME):
+        st.info(f"📥 Chargement du modèle Whisper '{WHISPER_MODEL_NAME}' depuis le cache local...")
+    else:
+        st.warning(
+            f"⚠️ Le modèle Whisper '{WHISPER_MODEL_NAME}' n'est pas encore en cache local. "
+            "Le premier lancement doit le télécharger."
+        )
+        st.caption(f"Cache attendu : `{cache_dir}`")
+
     try:
-        # Modèle 'tiny' = le plus rapide sur CPU
-        model = whisper.load_model("tiny")
-        st.success("✅ Modèle chargé !")
+        model = whisper.load_model(
+            WHISPER_MODEL_NAME,
+            download_root=cache_dir
+        )
     except Exception as e:
-        st.error(f"❌ Erreur lors du chargement du modèle : {str(e)}")
-        return []
-    
-    # Créer un dossier temporaire
+        raise RuntimeError(
+            f"Impossible de charger le modèle Whisper '{WHISPER_MODEL_NAME}'. "
+            f"Détail : {str(e)}. "
+            f"Préchargez le modèle une fois avec : {_commande_prechargement_whisper()}"
+        ) from e
+
+    st.success(f"✅ Modèle Whisper '{WHISPER_MODEL_NAME}' chargé !")
+
     temp_dir = "temp_audio"
     os.makedirs(temp_dir, exist_ok=True)
-    
+
     resultats = []
-    
-    # Progress bar
+    erreurs = []
+
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
+
     try:
         for i, audio_file in enumerate(audio_files):
-            # Mise à jour progress
             progress = (i + 1) / len(audio_files)
             progress_bar.progress(progress)
-            status_text.text(f"Transcription {i+1}/{len(audio_files)} : {audio_file.name}")
-            
-            # Sauvegarder temporairement le fichier audio
-            temp_audio_path = os.path.join(temp_dir, f"audio_{i}.ogg")
-            
-            with open(temp_audio_path, "wb") as f:
-                f.write(audio_file.getbuffer())
-            
-            # Mesurer le temps de transcription
+            status_text.text(
+                f"Transcription {i+1}/{len(audio_files)} avec Whisper {WHISPER_MODEL_NAME} : {audio_file.name}"
+            )
+
             start_time = time.time()
-            
+            temp_audio_path = None
+
             try:
-                # Transcrire avec Whisper (optimisé CPU)
+                extension = os.path.splitext(audio_file.name)[1].lower() or ".ogg"
+                temp_audio_path = os.path.join(temp_dir, f"audio_{i}{extension}")
+                with open(temp_audio_path, "wb") as f:
+                    f.write(audio_file.getbuffer())
+
                 result = model.transcribe(
                     temp_audio_path,
                     language="fr",
-                    fp16=False,  # Désactiver FP16 pour CPU
+                    fp16=False,
                     verbose=False
                 )
-                
                 texte_transcrit = result["text"].strip()
+
+                if not texte_transcrit:
+                    raise ValueError("Transcription vide reçue pour ce fichier.")
+
                 temps_transcription = time.time() - start_time
-                
-                # Analyser avec NLP
+
                 analyse = analyser_texte_nlp(texte_transcrit)
-                
-                # Stocker les résultats
+
                 resultats.append({
                     'numero': i + 1,
                     'fichier': audio_file.name,
                     'texte': texte_transcrit,
                     'nb_caracteres': len(texte_transcrit),
                     'temps_transcription': temps_transcription,
+                    'moteur_transcription': f"Whisper {WHISPER_MODEL_NAME}",
                     **analyse
                 })
-                
+
             except Exception as e:
+                erreurs.append(audio_file.name)
                 st.warning(f"⚠️ Erreur pour {audio_file.name} : {str(e)}")
                 continue
-            
+
             finally:
-                # Nettoyer le fichier temporaire
-                if os.path.exists(temp_audio_path):
+                if temp_audio_path and os.path.exists(temp_audio_path):
                     os.remove(temp_audio_path)
-        
-        # Nettoyer la progress bar
+
         progress_bar.empty()
         status_text.empty()
-        
+
+        if not resultats:
+            raise RuntimeError(
+                "Aucun fichier audio n'a pu être transcrit. "
+                "Vérifiez le modèle Whisper local, ffmpeg et les fichiers audio fournis."
+            )
+
+        if erreurs:
+            st.warning(
+                f"⚠️ {len(erreurs)} fichier(s) n'ont pas pu être transcrits sur {len(audio_files)}."
+            )
+
         return resultats
-    
+
     finally:
-        # Nettoyer le dossier temporaire
-        if os.path.exists(temp_dir):
+        if temp_dir and os.path.exists(temp_dir):
             try:
                 os.rmdir(temp_dir)
             except:
@@ -486,13 +688,6 @@ def generer_rapport_mobile_ia(text_results, audio_results):
     Génère un rapport d'investigation forensic mobile via Gemini 2.5 Flash.
     Le rapport est limité au périmètre Mobile / WhatsApp / NLP / Audio.
     """
-
-    try:
-        from google import genai
-    except ImportError:
-        raise Exception(
-            "Le SDK Google GenAI n'est pas installé. Installez-le avec : pip install google-genai"
-        )
 
     # =========================
     # Préparation des statistiques
@@ -575,126 +770,37 @@ def generer_rapport_mobile_ia(text_results, audio_results):
         ]
     }
 
+# =========================
+    # MASTER PROMPT (CALQUÉ SUR LE MODÈLE WINDOWS)
     # =========================
-    # TON PROMPT FORENSIC
-    # Remplace le texte ci-dessous par ton prompt exact si tu l’as déjà prêt.
-    # =========================
-    prompt_rapport = f"""
-    Tu es un expert senior en investigation numérique (DFIR), spécialisé dans l’analyse forensic mobile.
+    prompt_rapport = f"""Agissez en tant qu'Expert Analyste DFIR (Digital Forensics and Incident Response).
+    Rédigez un rapport d'investigation formel, structuré et impartial pour le dossier #2026-TC.
+    Périmètre technique : Communications mobiles, extractions WhatsApp (Texte/Audio) et analyse IA (NLP).
+    Sujet audité : "M. Jean Martin".
 
-═══════════════════════════════════════════════════════════
-CONTEXTE
-═══════════════════════════════════════════════════════════
+    ÉLÉMENTS FACTUELS EXTRAITS DES SCÉLLÉS (Basez votre analyse strictement sur ces points JSON) :
+    {json.dumps(payload, indent=2, ensure_ascii=False)}
 
-Affaire : TechCorp — Suspicion d’exfiltration de données  
-Périmètre : Analyse mobile uniquement (WhatsApp, messages texte, notes vocales)
+    INSTRUCTIONS DE RÉDACTION :
+    1. TON : Académique, objectif, factuel et procédural. Évitez le sensationnalisme. Mentionnez que l'IA est une aide à l'interprétation.
+    2. EN-TÊTE OBLIGATOIRE (À placer au tout début du texte) :
+    🏛️ DÉPARTEMENT DES INVESTIGATIONS NUMÉRIQUES (DFIR) 🏛️
+    **RAPPORT D'EXPERTISE FORENSIQUE : PÔLE MOBILE & IA (NLP)**
+    **Date d'émission :** 16 mars 2026
+    **Référence Dossier :** #2026-TC
+    **Sujet Ciblé :** M. Jean Martin
 
-Les données analysées proviennent :
-- d’extractions WhatsApp (msgstore.db)
-- de transcriptions audio (Whisper)
-- d’une analyse NLP des communications
+    3. STRUCTURE EXIGÉE :
+    # I. RÉSUMÉ EXÉCUTIF
+    # II. MÉTHODOLOGIE D'ANALYSE (NLP & ASR)
+    # III. QUALIFICATION DE LA PRÉMÉDITATION (MENS REA - LANGAGE CODÉ)
+    # IV. MATÉRIALISATION DES ACTES (ACTUS REUS - CORRÉLATION TEXTE/AUDIO)
+    # V. ÉVALUATION DU RISQUE ET CONCLUSION TECHNIQUE
 
-═══════════════════════════════════════════════════════════
-OBJECTIF
-═══════════════════════════════════════════════════════════
-
-Rédiger un rapport d’investigation forensic structuré,
-dans un style proche d’un rapport d’expert judiciaire (type FBI),
-basé exclusivement sur les éléments fournis.
-
-═══════════════════════════════════════════════════════════
-RÈGLES STRICTES
-═══════════════════════════════════════════════════════════
-
-- Ne jamais inventer d’informations
-- Ne pas sortir du périmètre mobile
-- Utiliser uniquement les données fournies
-- Distinguer clairement :
-  • faits observés
-  • résultats algorithmiques (NLP / IA)
-  • interprétation forensic
-
-- Ne pas affirmer une culpabilité absolue
-- Formuler des conclusions comme :
-  "présomptions", "indices concordants", "éléments suggestifs"
-
-- Mentionner que :
-  → l’analyse IA constitue une aide à l’interprétation
-
-- Respecter les principes :
-  - ISO/IEC 27037
-  - intégrité des preuves
-  - traçabilité
-
-═══════════════════════════════════════════════════════════
-STRUCTURE OBLIGATOIRE
-═══════════════════════════════════════════════════════════
-
-I. RÉSUMÉ EXÉCUTIF  
-→ synthèse globale des observations
-
-II. PÉRIMÈTRE DE L’ANALYSE  
-→ ce qui a été analysé (mobile uniquement)
-
-III. MÉTHODOLOGIE  
-→ NLP, transcription audio, scoring
-
-IV. ANALYSE DES COMMUNICATIONS TEXTE  
-→ messages suspects + patterns
-
-V. ANALYSE DES NOTES VOCALES  
-→ transcription + éléments suspects
-
-VI. CORRÉLATION DES RÉSULTATS  
-→ liens entre texte et audio
-
-VII. ANALYSE DES INTENTIONS (MENS REA)  
-→ intention suspecte (langage codé, ambiguïté, dissimulation)
-
-VIII. ACTES POTENTIELS (ACTUS REUS)  
-→ actions suggérées par les échanges (transfert, coordination, etc.)
-
-IX. INDICATEURS DE DISSIMULATION  
-→ langage indirect, termes vagues, stratégies d’évitement
-
-X. ÉVALUATION DU NIVEAU DE RISQUE  
-→ faible / moyen / élevé / critique
-
-XI. LIMITES DE L’ANALYSE  
-→ rôle de l’IA + absence de preuve matérielle directe
-
-XII. CONCLUSION FORENSIQUE  
-→ conclusion prudente mais structurée
-
-XIII. RECOMMANDATIONS  
-→ poursuite d’investigation (Windows, réseau, logs…)
-
-═══════════════════════════════════════════════════════════
-STYLE D’ÉCRITURE
-═══════════════════════════════════════════════════════════
-
-- Ton professionnel, formel, analytique
-- Style proche rapport judiciaire
-- Utiliser une chronologie implicite si possible
-- Utiliser :
-  🔴 Critique
-  🟠 Élevé
-  🟡 Moyen
-  🟢 Faible
-
-- Ne pas générer de code
-- Ne pas générer de JSON
-- Générer uniquement un rapport structuré
-
-═══════════════════════════════════════════════════════════
-DONNÉES À ANALYSER
-═══════════════════════════════════════════════════════════
-
-{json.dumps(payload, indent=2, ensure_ascii=False)}
-"""
-    return generer_contenu_gemini(prompt_rapport)
+    4. FORMATAGE : Utilisez le format Markdown standard. Ne générez aucun bloc de code (```) ni d'indentation au début des lignes. Ne générez pas de JSON dans votre réponse.
+    """
     
-
+    return generer_contenu_gemini(prompt_rapport)
 
 def afficher_resultats_texte(results):
     """Affiche les résultats de l'analyse des messages texte"""
@@ -1145,59 +1251,6 @@ Le système estime que le dossier présente un niveau de risque global **{niveau
 Une corrélation complémentaire avec les artefacts système, réseau, temporels
 et contextuels est recommandée pour confirmer l'interprétation.
 """)
-
-load_dotenv()
-
-def generer_contenu_gemini(prompt: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        raise Exception(
-            "Clé API Gemini introuvable. Vérifie le fichier .env ou la variable d'environnement GEMINI_API_KEY."
-        )
-
-    client = genai.Client(api_key=api_key)
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-
-    texte = getattr(response, "text", None)
-    if not texte:
-        raise Exception("Réponse vide reçue depuis Gemini.")
-
-    return texte
-
-    # =========================
-    # Bouton de téléchargement
-    # =========================
-    st.markdown("---")
-    resume_global = {
-        "total_text": total_text,
-        "total_audio": total_audio,
-        "total_communications": total,
-        "suspects_text": suspects_text,
-        "suspects_audio": suspects_audio,
-        "suspects_total": suspects_total,
-        "taux_text": round(taux_text, 2),
-        "taux_audio": round(taux_audio, 2),
-        "taux_total": round(taux_total, 2),
-        "score_moyen_text": round(score_moyen_text, 2),
-        "score_moyen_audio": round(score_moyen_audio, 2),
-        "score_moyen_global": round(score_moyen_global, 2),
-        "niveau_global": niveau_global,
-        "niveau_dominant": niveau_dominant,
-        "source_risque": source_risque,
-        "top_patterns": top_patterns[:5]
-    }
-
-    st.download_button(
-        label="📥 Télécharger le résumé global (JSON)",
-        data=json.dumps(resume_global, indent=2, ensure_ascii=False),
-        file_name="resume_global_forensic.json",
-        mime="application/json"
-    )
 
 def afficher_hash_files(db_file, audio_files):
     """Hash des fichiers"""

