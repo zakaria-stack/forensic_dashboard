@@ -211,6 +211,92 @@ def _normaliser_texte_pdf(texte):
     return texte_normalise
 
 
+def _pdf_output_to_bytes(pdf):
+    """Convertit la sortie FPDF en bytes, quelle que soit la version installee."""
+    pdf_output = pdf.output(dest='S')
+    if isinstance(pdf_output, bytes):
+        return pdf_output
+    if isinstance(pdf_output, bytearray):
+        return bytes(pdf_output)
+    if isinstance(pdf_output, str):
+        return pdf_output.encode('latin-1')
+
+    return bytes(pdf_output)
+
+
+def _nettoyer_ligne_pdf(ligne):
+    """Prepare une ligne Markdown pour FPDF et supprime les caracteres non imprimables."""
+    contenu = (
+        ligne.replace('**', '')
+        .replace('*', '-')
+        .replace('`', '')
+        .replace('\t', ' ')
+    )
+    contenu = ''.join(
+        caractere if caractere == '\n' or caractere == ' ' or caractere.isprintable() else ' '
+        for caractere in contenu
+    )
+    return contenu.encode('latin-1', 'ignore').decode('latin-1').strip()
+
+
+def _decouper_ligne_pdf(pdf, texte, largeur_max):
+    """
+    Decoupe le texte avant rendu pour eviter l'erreur fpdf/fpdf2 :
+    "Not enough horizontal space to render a single character".
+    """
+    mots = texte.split()
+    if not mots:
+        return [""]
+
+    lignes = []
+    ligne_courante = ""
+
+    def decouper_mot_trop_long(mot):
+        morceaux = []
+        morceau = ""
+        for caractere in mot:
+            candidat = morceau + caractere
+            if morceau and pdf.get_string_width(candidat) > largeur_max:
+                morceaux.append(morceau)
+                morceau = caractere
+            else:
+                morceau = candidat
+
+        if morceau:
+            morceaux.append(morceau)
+
+        return morceaux or [mot]
+
+    for mot in mots:
+        morceaux_mot = (
+            decouper_mot_trop_long(mot)
+            if pdf.get_string_width(mot) > largeur_max
+            else [mot]
+        )
+
+        for morceau in morceaux_mot:
+            candidat = f"{ligne_courante} {morceau}".strip()
+            if ligne_courante and pdf.get_string_width(candidat) > largeur_max:
+                lignes.append(ligne_courante)
+                ligne_courante = morceau
+            else:
+                ligne_courante = candidat
+
+    if ligne_courante:
+        lignes.append(ligne_courante)
+
+    return lignes
+
+
+def _ecrire_ligne_pdf(pdf, texte, largeur_utile, hauteur=6):
+    """Ecrit une ligne deja nettoyee avec une largeur explicite et stable."""
+    largeur_max = max(10, largeur_utile - 2)
+    for segment in _decouper_ligne_pdf(pdf, texte, largeur_max):
+        if pdf.get_y() > pdf.page_break_trigger:
+            pdf.add_page()
+        pdf.cell(largeur_utile, hauteur, txt=segment, ln=1)
+
+
 def generate_pdf_report(texte_md):
     """Genere un PDF robuste a partir du rapport Markdown."""
     try:
@@ -237,6 +323,7 @@ def generate_pdf_report(texte_md):
     pdf.set_title("Rapport Expertise Mobile")
 
     texte_normalise = _normaliser_texte_pdf(texte_md)
+    largeur_utile = pdf.w - pdf.l_margin - pdf.r_margin
 
     for ligne in texte_normalise.splitlines():
         ligne = ligne.strip()
@@ -246,27 +333,17 @@ def generate_pdf_report(texte_md):
             continue
 
         if ligne.startswith('#'):
-            titre = ligne.replace('#', '').replace('*', '').strip().upper()
+            titre = _nettoyer_ligne_pdf(ligne.replace('#', '').upper())
             pdf.set_font("Arial", 'B', 12)
-            safe_title = titre.encode('latin-1', 'ignore').decode('latin-1')
-            pdf.multi_cell(0, 8, txt=safe_title)
+            _ecrire_ligne_pdf(pdf, titre, largeur_utile, hauteur=8)
             pdf.ln(2)
             continue
 
-        contenu = ligne.replace('**', '').replace('*', '-').replace('`', '')
+        contenu = _nettoyer_ligne_pdf(ligne)
         pdf.set_font("Arial", size=11)
-        safe_line = contenu.encode('latin-1', 'ignore').decode('latin-1')
-        pdf.multi_cell(0, 6, txt=safe_line)
+        _ecrire_ligne_pdf(pdf, contenu, largeur_utile, hauteur=6)
 
-    pdf_output = pdf.output(dest='S')
-    if isinstance(pdf_output, bytes):
-        return pdf_output
-    if isinstance(pdf_output, bytearray):
-        return bytes(pdf_output)
-    if isinstance(pdf_output, str):
-        return pdf_output.encode('latin-1')
-
-    return bytes(pdf_output)
+    return _pdf_output_to_bytes(pdf)
 
 
 def _whisper_cache_dir():
